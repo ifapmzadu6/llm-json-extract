@@ -66,9 +66,47 @@ yarn add llm-json-extract
 
 ### Prompt the model
 
-Whatever the model is, ask for the answer inside `<result>` tags:
+The library is most reliable when the model wraps its answer in `<result>` tags. Below are prompt snippets that work well across Claude, GPT, and Codex CLI. **Tip:** even when you allow reasoning before the answer, this library's `pickLast` default selects the *last* `<result>` block in the output, so you don't have to police the model about not "showing its work."
 
-> Reply with only the JSON, wrapped in `<result>...</result>`. You may think first inside `<thinking>...</thinking>`.
+**Minimal — just the answer:**
+
+```text
+Reply with ONLY a JSON object wrapped in <result>...</result>. No prose before or after the tags.
+```
+
+**With reasoning allowed (recommended):**
+
+```text
+You may think first inside <thinking>...</thinking>.
+Then output the FINAL answer as JSON wrapped in <result>...</result>.
+Nothing else after </result>.
+```
+
+**With a schema (most reliable):**
+
+```text
+Output JSON matching this schema, wrapped in <result>...</result>:
+
+{
+  "name": string,
+  "age": integer,
+  "hobbies": string[]
+}
+
+Rules:
+- No explanation outside the <result> tags.
+- Use double quotes. No trailing commas (we tolerate them, but stricter is safer).
+- If a field is unknown, use null (not "unknown" or "").
+```
+
+**For multi-step / agent runs (avoid example collisions):**
+
+If your prompt includes an example like `<result>{"score": 0}</result>`, the model may echo it. `pickLast` will still grab the real answer, but if you want to be explicit, use a distinct tag for the example:
+
+```text
+Example format (do not copy values): <example>{"score": 0}</example>
+Reply with the real answer in <result>...</result>.
+```
 
 ### Extract
 
