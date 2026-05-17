@@ -8,8 +8,7 @@ Extract and validate JSON from messy LLM output.
 Designed for workflows where **provider-native structured output is not available** — Claude Code CLI, Codex CLI, agent frameworks, or any pipeline that asks a model for JSON via prompt rather than `tool_use` / `response_format`.
 
 ```ts
-import { extractJson, extractJsonWith } from "llm-json-extract";
-import { z } from "zod";
+import { extractJson } from "llm-json-extract";
 
 const text = `
 <thinking>The user wants a list of fruits...</thinking>
@@ -23,10 +22,17 @@ const text = `
 
 extractJson(text);
 // { items: ["apple", "banana", "cherry"], count: 3 }
+```
+
+With a schema:
+
+```ts
+import { extractJsonWith } from "llm-json-extract";
+import { z } from "zod";
 
 const Schema = z.object({ items: z.array(z.string()), count: z.number() });
-extractJsonWith(text, Schema.parse);
-// fully typed, validated value
+const value = extractJsonWith(text, Schema.parse);
+// fully typed, validated
 ```
 
 ## Why?
