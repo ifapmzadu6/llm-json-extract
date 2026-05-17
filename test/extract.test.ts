@@ -9,9 +9,7 @@ import {
 
 describe("extractJsonString", () => {
   it("extracts from <result> tag", () => {
-    const out = extractJsonString(
-      `Thinking...\n<result>{"a": 1}</result>\nDone.`,
-    );
+    const out = extractJsonString(`Thinking...\n<result>{"a": 1}</result>\nDone.`);
     expect(out).toBe('{"a": 1}');
   });
 
@@ -30,6 +28,31 @@ describe("extractJsonString", () => {
     expect(out).toBe("[1,2,3]");
   });
 
+  it("picks the tag that appears LAST in document, not the highest-priority tag", () => {
+    // <result> is in the defaults but appears before <output>. pickLast (default)
+    // should pick the <output> match because it appears later in the text.
+    const text = `<result>{"old": 1}</result>\n\n<output>{"new": 2}</output>`;
+    expect(extractJsonString(text)).toBe('{"new": 2}');
+  });
+
+  it("picks the FIRST tag occurrence regardless of tag list order when pickLast=false", () => {
+    const text = `<output>{"new": 2}</output>\n<result>{"old": 1}</result>`;
+    expect(extractJsonString(text, { pickLast: false })).toBe('{"new": 2}');
+  });
+
+  it("does NOT match <answer> by default (not in default tag list anymore)", () => {
+    // Bare-JSON fallback will still find the inner JSON, but the tag itself
+    // is not honored as a tag boundary.
+    const out = extractJsonString(`prose <answer>{"a":1}</answer> tail`);
+    // Bare JSON falls back to first balanced {...}.
+    expect(out).toBe('{"a":1}');
+  });
+
+  it("matches <answer> when explicitly enabled", () => {
+    const text = `prose <answer>{"a":1}</answer> tail`;
+    expect(extractJsonString(text, { tags: ["answer"] })).toBe('{"a":1}');
+  });
+
   it("supports custom tags", () => {
     const out = extractJsonString(`<final>{"ok":true}</final>`, {
       tags: ["final"],
@@ -38,7 +61,7 @@ describe("extractJsonString", () => {
   });
 
   it("falls back to ```json fence", () => {
-    const out = extractJsonString("Sure!\n```json\n{\"a\":1}\n```\n");
+    const out = extractJsonString('Sure!\n```json\n{"a":1}\n```\n');
     expect(out).toBe('{"a":1}');
   });
 
@@ -48,7 +71,7 @@ describe("extractJsonString", () => {
   });
 
   it("falls back to bare JSON object", () => {
-    const out = extractJsonString("Here you go: {\"a\":1,\"b\":2} done.");
+    const out = extractJsonString('Here you go: {"a":1,"b":2} done.');
     expect(out).toBe('{"a":1,"b":2}');
   });
 
@@ -72,19 +95,17 @@ describe("extractJsonString", () => {
   });
 
   it("tag match is case-insensitive", () => {
-    expect(extractJsonString("<RESULT>{\"a\":1}</RESULT>")).toBe('{"a":1}');
+    expect(extractJsonString('<RESULT>{"a":1}</RESULT>')).toBe('{"a":1}');
   });
 
   it("tag with attributes works", () => {
-    expect(extractJsonString('<result type="json">{"a":1}</result>')).toBe(
-      '{"a":1}',
-    );
+    expect(extractJsonString('<result type="json">{"a":1}</result>')).toBe('{"a":1}');
   });
 });
 
 describe("extractJson (parse)", () => {
   it("parses repaired JSON (trailing comma)", () => {
-    expect(extractJson("<result>{\"a\":1,}</result>")).toEqual({ a: 1 });
+    expect(extractJson('<result>{"a":1,}</result>')).toEqual({ a: 1 });
   });
 
   it("parses repaired JSON (single quotes)", () => {
@@ -105,9 +126,9 @@ describe("extractJson (parse)", () => {
   });
 
   it("repair=false rejects malformed input", () => {
-    expect(() =>
-      extractJson("<result>{a: 1}</result>", { repair: false }),
-    ).toThrow(LlmJsonExtractError);
+    expect(() => extractJson("<result>{a: 1}</result>", { repair: false })).toThrow(
+      LlmJsonExtractError,
+    );
   });
 
   it("throws extract error when no JSON found", () => {

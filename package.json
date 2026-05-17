@@ -1,6 +1,6 @@
 {
   "name": "llm-json-extract",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Extract & validate JSON from messy LLM output. Designed for Claude / Codex CLI workflows where tool-use is unavailable. XML-tag aware, with multi-stage fallbacks and jsonrepair.",
   "keywords": [
     "llm",
@@ -53,12 +53,16 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "fix": "biome check --write .",
+    "prepublishOnly": "npm run lint && npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
     "jsonrepair": "^3.13.1"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.15",
     "@types/node": "^22.10.0",
     "tsup": "^8.3.5",
     "typescript": "^5.7.2",

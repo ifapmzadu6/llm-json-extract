@@ -31,11 +31,9 @@ const dir = mkdtempSync(join(tmpdir(), "llmjsonextract-e2e2-"));
 const outFile = join(dir, "last.txt");
 
 console.log("→ codex exec (messy prompt) ...");
-execFileSync(
-  "codex",
-  ["exec", "--skip-git-repo-check", "-o", outFile, PROMPT],
-  { stdio: ["ignore", "inherit", "inherit"] },
-);
+execFileSync("codex", ["exec", "--skip-git-repo-check", "-o", outFile, PROMPT], {
+  stdio: ["ignore", "inherit", "inherit"],
+});
 const text = readFileSync(outFile, "utf8");
 
 console.log("\n=== raw (last 800 chars) ===");
@@ -50,7 +48,7 @@ console.log("extractJson →", JSON.stringify(data, null, 2));
 
 if (!data || typeof data !== "object") throw new Error("expected object");
 if (!Array.isArray(data.games) || data.games.length !== 2) {
-  throw new Error("expected 2 games, got " + JSON.stringify(data.games));
+  throw new Error(`expected 2 games, got ${JSON.stringify(data.games)}`);
 }
 for (const g of data.games) {
   if (typeof g.title !== "string") throw new Error("title not string");

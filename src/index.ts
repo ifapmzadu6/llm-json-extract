@@ -2,17 +2,20 @@ import { jsonrepair } from "jsonrepair";
 
 export interface ExtractOptions {
   /**
-   * Tag names to look for, in order. The text inside `<tag>...</tag>` is
-   * treated as the JSON payload.
+   * Tag names to look for. All configured tags are scanned across the
+   * whole input; the match selected is then chosen by `pickLast`. Tag
+   * order in this array does NOT affect priority.
    *
-   * @default ["result", "json", "output", "answer", "response"]
+   * @default ["result", "json", "output"]
    */
   tags?: string[];
 
   /**
-   * If true and a tag appears multiple times, use the **last** occurrence.
-   * This is usually what you want — models often show an example earlier
-   * and the real answer last.
+   * When multiple tag matches are found anywhere in the input, this
+   * controls which one is returned:
+   *  - `true`  → the match whose closing tag appears **last** in the text.
+   *               Best for "example earlier, real answer at the end" prompts.
+   *  - `false` → the match whose opening tag appears **first**.
    *
    * @default true
    */
@@ -43,7 +46,7 @@ export interface ExtractOptions {
   repair?: boolean;
 }
 
-const DEFAULT_TAGS = ["result", "json", "output", "answer", "response"];
+const DEFAULT_TAGS = ["result", "json", "output"];
 
 export class LlmJsonExtractError extends Error {
   readonly stage: "extract" | "parse" | "validate";
@@ -75,21 +78,21 @@ export class LlmJsonExtractError extends Error {
  *
  * Returns `null` if nothing JSON-shaped can be found.
  */
-export function extractJsonString(
-  text: string,
-  options: ExtractOptions = {},
-): string | null {
+export function extractJsonString(text: string, options: ExtractOptions = {}): string | null {
   const tags = options.tags ?? DEFAULT_TAGS;
   const pickLast = options.pickLast ?? true;
   const tryCodeFence = options.tryCodeFence ?? true;
   const tryBareJson = options.tryBareJson ?? true;
 
-  // Strategy 1: tags. Try each tag in order; within a tag, pick first or last match.
-  for (const tag of tags) {
-    const matches = findTagMatches(text, tag);
-    if (matches.length === 0) continue;
-    const picked = pickLast ? matches[matches.length - 1] : matches[0];
-    if (picked !== undefined) return picked.trim();
+  // Strategy 1: scan ALL configured tags across the whole input, then pick
+  // by document position (not by tag-list order).
+  const tagMatches = findAllTagMatches(text, tags);
+  if (tagMatches.length > 0) {
+    // pickLast=true → match whose closing tag appears latest (sorted by `end`).
+    // pickLast=false → match whose opening tag appears earliest (sorted by `start`).
+    tagMatches.sort((a, b) => (pickLast ? a.end - b.end : a.start - b.start));
+    const picked = pickLast ? tagMatches[tagMatches.length - 1] : tagMatches[0];
+    if (picked !== undefined) return picked.body.trim();
   }
 
   // Strategy 2: fenced code blocks.
@@ -167,12 +170,26 @@ export function extractJsonWith<T>(
 
 // ---------- internals ----------
 
-function findTagMatches(text: string, tag: string): string[] {
-  const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(`<${escaped}(?:\\s[^>]*)?>([\\s\\S]*?)</${escaped}>`, "gi");
-  const out: string[] = [];
-  for (const m of text.matchAll(re)) {
-    if (m[1] !== undefined) out.push(m[1]);
+interface TagMatch {
+  body: string;
+  start: number; // index of opening `<`
+  end: number; // index just past closing `>`
+}
+
+function findAllTagMatches(text: string, tags: readonly string[]): TagMatch[] {
+  const out: TagMatch[] = [];
+  for (const tag of tags) {
+    const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`<${escaped}(?:\\s[^>]*)?>([\\s\\S]*?)</${escaped}>`, "gi");
+    for (const m of text.matchAll(re)) {
+      if (m[1] !== undefined && m.index !== undefined) {
+        out.push({
+          body: m[1],
+          start: m.index,
+          end: m.index + m[0].length,
+        });
+      }
+    }
   }
   return out;
 }

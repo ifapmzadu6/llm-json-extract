@@ -19,17 +19,15 @@ const outFile = join(dir, "last.txt");
 
 function run(prompt) {
   console.log("→ codex exec ...");
-  execFileSync(
-    "codex",
-    ["exec", "--skip-git-repo-check", "-o", outFile, prompt],
-    { stdio: ["ignore", "inherit", "inherit"] },
-  );
+  execFileSync("codex", ["exec", "--skip-git-repo-check", "-o", outFile, prompt], {
+    stdio: ["ignore", "inherit", "inherit"],
+  });
   return readFileSync(outFile, "utf8");
 }
 
 try {
   const text = run(PROMPT);
-  console.log("\n=== raw output ===\n" + text + "\n==================\n");
+  console.log(`\n=== raw output ===\n${text}\n==================\n`);
 
   const extracted = extractJsonString(text);
   console.log("extractJsonString →", extracted);
