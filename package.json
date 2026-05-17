@@ -1,0 +1,71 @@
+{
+  "name": "llm-json-extract",
+  "version": "0.1.0",
+  "description": "Extract & validate JSON from messy LLM output. Designed for Claude / Codex CLI workflows where tool-use is unavailable. XML-tag aware, with multi-stage fallbacks and jsonrepair.",
+  "keywords": [
+    "llm",
+    "json",
+    "extract",
+    "parse",
+    "claude",
+    "anthropic",
+    "openai",
+    "codex",
+    "xml",
+    "structured-output",
+    "jsonrepair",
+    "zod",
+    "valibot",
+    "schema"
+  ],
+  "license": "MIT",
+  "author": "Keisuke Karijuku <keisuke.karijuku@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ifapmzadu6/llm-json-extract.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ifapmzadu6/llm-json-extract/issues"
+  },
+  "homepage": "https://github.com/ifapmzadu6/llm-json-extract#readme",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "jsonrepair": "^3.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8",
+    "zod": "^3.24.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
