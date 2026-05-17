@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
   extractJson,
+  extractJsonCandidates,
   extractJsonString,
   extractJsonWith,
   LlmJsonExtractError,
@@ -216,5 +217,66 @@ Let me know if you need anything else.`;
 
   it("handles raw object only", () => {
     expect(extractJson('{"x":1}')).toEqual({ x: 1 });
+  });
+});
+
+describe("fallthrough across candidates", () => {
+  it("falls through to next tag match when the picked one is unparseable", () => {
+    // Last <result> is unparseable garbage; earlier one is valid.
+    const text = `<result>{"good": 1}</result>\n<result>this is not json at all{</result>`;
+    expect(extractJson(text)).toEqual({ good: 1 });
+  });
+
+  it("falls through to fence when all tag bodies are unparseable", () => {
+    const text = `<result>nope</result>\n\n\`\`\`json\n{"from":"fence"}\n\`\`\``;
+    expect(extractJson(text)).toEqual({ from: "fence" });
+  });
+
+  it("falls through to bare JSON when fence is also unparseable", () => {
+    const text = `<result>nope</result>\n\`\`\`\njust prose\n\`\`\`\n{"from":"bare"}`;
+    expect(extractJson(text)).toEqual({ from: "bare" });
+  });
+
+  it("extractJsonWith falls through past parseable-but-invalid candidates", () => {
+    // First candidate parses but fails schema; second parses and validates.
+    const Schema = z.object({ kind: z.literal("real"), value: z.number() });
+    const text = `Earlier I wrote {"kind":"placeholder"} but the real answer is:
+<result>{"kind": "real", "value": 42}</result>`;
+    expect(extractJsonWith(text, Schema.parse)).toEqual({ kind: "real", value: 42 });
+  });
+
+  it("throws with last error when no candidate parses or validates", () => {
+    const Schema = z.object({ ok: z.literal(true) });
+    const text = `<result>{"ok": false}</result>`;
+    try {
+      extractJsonWith(text, Schema.parse);
+      expect.fail("should throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(LlmJsonExtractError);
+      expect((e as LlmJsonExtractError).stage).toBe("validate");
+    }
+  });
+});
+
+describe("extractJsonCandidates", () => {
+  it("returns the preferred candidate first, then doc-order alternates", () => {
+    const text = `<result>{"a": 1}</result>\n<result>{"a": 2}</result>\n\`\`\`json
+{"a": 3}
+\`\`\``;
+    const cands = extractJsonCandidates(text);
+    // Preferred (pickLast=true → last tag) comes first; remaining tag in doc order; then fence.
+    expect(cands[0]).toBe('{"a": 2}');
+    expect(cands[1]).toBe('{"a": 1}');
+    expect(cands[2]).toBe('{"a": 3}');
+  });
+
+  it("dedupes identical candidates", () => {
+    const text = `<result>{"a":1}</result>\n{"a":1}`;
+    const cands = extractJsonCandidates(text);
+    expect(cands).toEqual(['{"a":1}']);
+  });
+
+  it("returns empty array when nothing JSON-like", () => {
+    expect(extractJsonCandidates("just prose")).toEqual([]);
   });
 });

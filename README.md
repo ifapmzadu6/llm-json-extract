@@ -48,6 +48,7 @@ This package implements the de-facto pattern Anthropic recommends in [their docs
 - **Prose-tolerant by design** — the model can think out loud; only the tagged answer is extracted
 - **XML tag aware** — finds `<result>...</result>`, `<json>...</json>`, etc. (configurable)
 - **Multi-stage fallbacks** — tag → fenced code block → bare `{...}` / `[...]` in raw text
+- **Parse-aware fallthrough** — if the preferred candidate fails to parse (or fails your schema), the next candidate is tried automatically; object/array results are preferred over stray primitives
 - **Document-position `pickLast`** — when the model echoes a prompt example, picks the *real* answer at the end
 - **`jsonrepair` integrated** — fixes trailing commas, single quotes, comments, unquoted keys
 - **Schema-agnostic validation** — pass `zod.parse`, `valibot`, `arktype`, or any `(unknown) => T`
@@ -154,6 +155,17 @@ import { extractJsonString } from "llm-json-extract";
 const jsonStr = extractJsonString(modelOutput); // string | null — not parsed
 ```
 
+### All candidates (advanced)
+
+```ts
+import { extractJsonCandidates } from "llm-json-extract";
+
+const candidates = extractJsonCandidates(modelOutput);
+// e.g. ["<final answer>", "<earlier echo>", "<fence body>", "<stray bare JSON>"]
+```
+
+Useful when you want to score, log, or pick candidates yourself. `extractJson` and `extractJsonWith` already try each candidate automatically, so most users don't need this.
+
 ## CLI example
 
 Pipe Claude Code CLI output directly:
@@ -190,10 +202,10 @@ const { items } = extractJsonWith(out, Schema.parse);
 
 ```ts
 extractJson(text, {
-  tags: ["result", "json", "output", "answer", "response"], // tags to try, in order
-  pickLast: true,         // if a tag appears N times, take the last
-  tryCodeFence: true,     // fall back to ```json``` / ``` ``` blocks
-  tryBareJson: true,      // fall back to scanning for {...} / [...]
+  tags: ["result", "json", "output"], // tag names; document position decides priority (not list order)
+  pickLast: true,         // when multiple matches, prefer the one closer to the end
+  tryCodeFence: true,     // also collect ```json``` / ``` ``` blocks as candidates
+  tryBareJson: true,      // also collect balanced {...} / [...] runs as candidates
   repair: true,           // run jsonrepair before JSON.parse
 });
 ```
@@ -216,13 +228,13 @@ try {
 
 ## Extraction strategy
 
-In order, until one succeeds:
+A list of candidate JSON strings is built in this order:
 
-1. **Tag match** — `<result>`, `<json>`, `<output>`, `<answer>`, `<response>` (case-insensitive, attributes OK). On multi-match, last wins (configurable).
-2. **Code fence** — ```` ```json ```` block, then bare ```` ``` ``` ```` block.
-3. **Bare JSON** — first balanced `{...}` or `[...]` in the text, respecting strings and escapes.
+1. **Tag match** — `<result>`, `<json>`, `<output>` by default (case-insensitive, attributes OK). The preferred match (last in document by default; controlled by `pickLast`) goes first, then other matches in document order.
+2. **Code fence** — ```` ```json ```` blocks first, then bare ```` ``` ``` ```` blocks, in document order.
+3. **Bare JSON** — balanced `{...}` / `[...]` runs in the text, respecting strings and escapes.
 
-Then the extracted string is repaired with [`jsonrepair`](https://github.com/josdejong/jsonrepair) and passed to `JSON.parse`. Finally, if you used `extractJsonWith`, the parsed value is handed to your validator.
+Then `extractJson` walks the candidate list, running [`jsonrepair`](https://github.com/josdejong/jsonrepair) and `JSON.parse` on each, returning the first one that yields an **object or array**. If only primitives (strings, numbers, etc.) parse — which happens when `jsonrepair` turns a stray prose word like `nope` into a string — those are returned only as a last resort. `extractJsonWith` does the same, additionally skipping candidates that fail your validator.
 
 ## When **not** to use this
 

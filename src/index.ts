@@ -12,10 +12,13 @@ export interface ExtractOptions {
 
   /**
    * When multiple tag matches are found anywhere in the input, this
-   * controls which one is returned:
+   * controls which one is preferred:
    *  - `true`  → the match whose closing tag appears **last** in the text.
    *               Best for "example earlier, real answer at the end" prompts.
    *  - `false` → the match whose opening tag appears **first**.
+   *
+   * Note that `extractJson` will still try the *other* tag matches as
+   * fallbacks if the preferred one fails to parse.
    *
    * @default true
    */
@@ -23,15 +26,15 @@ export interface ExtractOptions {
 
   /**
    * Whether to also try fenced code blocks (```json ... ``` or ``` ... ```)
-   * when no tag is found.
+   * when no tag candidate yields valid JSON.
    *
    * @default true
    */
   tryCodeFence?: boolean;
 
   /**
-   * Whether to fall back to scanning for the first balanced `{...}` or
-   * `[...]` in the raw text when no tag and no fence are found.
+   * Whether to fall back to scanning for balanced `{...}` or `[...]` in
+   * the raw text when no tag and no fence yields valid JSON.
    *
    * @default true
    */
@@ -69,55 +72,80 @@ export class LlmJsonExtractError extends Error {
 }
 
 /**
- * Extract a JSON string from LLM output without parsing it.
+ * Collect all candidate JSON strings from the input, ordered by preference.
  *
- * Tries each strategy in turn:
- *   1. `<result>...</result>` (or other configured tags)
- *   2. ```json ... ``` / ``` ... ``` fenced blocks
- *   3. First balanced `{...}` or `[...]` in the raw text
+ * Order:
+ *   1. The preferred tag match (latest or earliest, per `pickLast`).
+ *   2. Other tag matches, in document order.
+ *   3. Fenced code blocks (```json``` preferred, then bare ``` ```), in document order.
+ *   4. Bare balanced `{...}` / `[...]` runs in the text, in document order.
  *
- * Returns `null` if nothing JSON-shaped can be found.
+ * Strategies 3 and 4 can be disabled via options. Use this when you want
+ * to inspect or try parsing candidates yourself.
  */
-export function extractJsonString(text: string, options: ExtractOptions = {}): string | null {
+export function extractJsonCandidates(text: string, options: ExtractOptions = {}): string[] {
   const tags = options.tags ?? DEFAULT_TAGS;
   const pickLast = options.pickLast ?? true;
   const tryCodeFence = options.tryCodeFence ?? true;
   const tryBareJson = options.tryBareJson ?? true;
 
-  // Strategy 1: scan ALL configured tags across the whole input, then pick
-  // by document position (not by tag-list order).
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+  const push = (s: string | null | undefined): void => {
+    if (s === null || s === undefined) return;
+    const trimmed = s.trim();
+    if (trimmed.length === 0 || seen.has(trimmed)) return;
+    seen.add(trimmed);
+    candidates.push(trimmed);
+  };
+
+  // Strategy 1: all tag matches, with the preferred one first.
   const tagMatches = findAllTagMatches(text, tags);
   if (tagMatches.length > 0) {
-    // pickLast=true → match whose closing tag appears latest (sorted by `end`).
-    // pickLast=false → match whose opening tag appears earliest (sorted by `start`).
-    tagMatches.sort((a, b) => (pickLast ? a.end - b.end : a.start - b.start));
-    const picked = pickLast ? tagMatches[tagMatches.length - 1] : tagMatches[0];
-    if (picked !== undefined) return picked.body.trim();
+    const sortedByDocPos = [...tagMatches].sort((a, b) => a.start - b.start);
+    const preferred = pickLast
+      ? [...tagMatches].sort((a, b) => a.end - b.end).pop()
+      : sortedByDocPos[0];
+    if (preferred !== undefined) push(preferred.body);
+    for (const m of sortedByDocPos) push(m.body);
   }
 
-  // Strategy 2: fenced code blocks.
+  // Strategy 2: code fences in document order.
   if (tryCodeFence) {
-    const fenced = matchCodeFence(text);
-    if (fenced !== null) return fenced.trim();
+    for (const f of findAllCodeFences(text)) push(f);
   }
 
-  // Strategy 3: bare JSON.
+  // Strategy 3: bare balanced JSON runs.
   if (tryBareJson) {
-    const bare = extractBareJson(text);
-    if (bare !== null) return bare;
+    for (const b of findAllBareJson(text)) push(b);
   }
 
-  return null;
+  return candidates;
+}
+
+/**
+ * Extract a JSON string from LLM output without parsing it.
+ *
+ * Returns the **preferred** candidate (first entry of {@link extractJsonCandidates}),
+ * or `null` if nothing JSON-shaped is found. For parse-aware fallback across
+ * multiple candidates, use {@link extractJson}.
+ */
+export function extractJsonString(text: string, options: ExtractOptions = {}): string | null {
+  const [first] = extractJsonCandidates(text, options);
+  return first ?? null;
 }
 
 /**
  * Extract and parse JSON from LLM output.
  *
- * Throws `LlmJsonExtractError` if extraction or parsing fails.
+ * Each candidate from {@link extractJsonCandidates} is tried in order;
+ * the first one that successfully parses (after optional `jsonrepair`)
+ * is returned. Throws {@link LlmJsonExtractError} only if no candidate
+ * parses, or none was found.
  */
 export function extractJson(text: string, options: ExtractOptions = {}): unknown {
-  const extracted = extractJsonString(text, options);
-  if (extracted === null) {
+  const candidates = extractJsonCandidates(text, options);
+  if (candidates.length === 0) {
     throw new LlmJsonExtractError({
       message: "No JSON-like content found in input",
       stage: "extract",
@@ -126,24 +154,45 @@ export function extractJson(text: string, options: ExtractOptions = {}): unknown
     });
   }
   const repair = options.repair ?? true;
-  const candidate = repair ? safeRepair(extracted) : extracted;
-  try {
-    return JSON.parse(candidate);
-  } catch (err) {
-    throw new LlmJsonExtractError({
-      message: `JSON.parse failed: ${err instanceof Error ? err.message : String(err)}`,
-      stage: "parse",
-      raw: text,
-      extracted,
-      cause: err,
-    });
+  // Two-pass: prefer object/array results over primitives, because jsonrepair
+  // happily turns bare words ("nope") into JSON strings, which would mask a
+  // later candidate that holds the real structured answer.
+  let lastError: unknown;
+  let lastCandidate: string | null = null;
+  let primitiveFallback: { value: unknown; extracted: string } | undefined;
+  for (const candidate of candidates) {
+    lastCandidate = candidate;
+    const parsed = tryParse(candidate, repair);
+    if (parsed.ok) {
+      if (isStructured(parsed.value)) return parsed.value;
+      if (primitiveFallback === undefined) {
+        primitiveFallback = { value: parsed.value, extracted: candidate };
+      }
+      continue;
+    }
+    lastError = parsed.error;
   }
+  if (primitiveFallback !== undefined) return primitiveFallback.value;
+  throw new LlmJsonExtractError({
+    message: `JSON.parse failed for all candidates: ${
+      lastError instanceof Error ? lastError.message : String(lastError)
+    }`,
+    stage: "parse",
+    raw: text,
+    extracted: lastCandidate,
+    cause: lastError,
+  });
 }
 
 /**
  * Extract, parse, and validate JSON from LLM output with a user-supplied
  * validator. Works with any schema library — pass `schema.parse` for zod,
  * `(x) => v.parse(schema, x)` for valibot, etc.
+ *
+ * Candidates that parse but fail validation are skipped in favor of the
+ * next candidate. This handles cases where an earlier candidate happens
+ * to be valid JSON but isn't the answer (e.g. a stray object literal in
+ * prose).
  *
  * @example
  *   const User = z.object({ name: z.string(), age: z.number() });
@@ -154,18 +203,60 @@ export function extractJsonWith<T>(
   validate: (value: unknown) => T,
   options: ExtractOptions = {},
 ): T {
-  const parsed = extractJson(text, options);
-  try {
-    return validate(parsed);
-  } catch (err) {
+  const candidates = extractJsonCandidates(text, options);
+  if (candidates.length === 0) {
     throw new LlmJsonExtractError({
-      message: `Validation failed: ${err instanceof Error ? err.message : String(err)}`,
-      stage: "validate",
+      message: "No JSON-like content found in input",
+      stage: "extract",
       raw: text,
-      extracted: JSON.stringify(parsed),
-      cause: err,
+      extracted: null,
     });
   }
+  const repair = options.repair ?? true;
+  // Two passes: try structured (object/array) candidates first, then primitives.
+  // Validators that reject primitives won't be tricked by jsonrepair turning
+  // stray words into JSON strings.
+  let lastError: unknown;
+  let lastCandidate: string | null = null;
+  let lastStage: "parse" | "validate" = "parse";
+  const primitives: { value: unknown; extracted: string }[] = [];
+  for (const candidate of candidates) {
+    lastCandidate = candidate;
+    const parsed = tryParse(candidate, repair);
+    if (!parsed.ok) {
+      lastStage = "parse";
+      lastError = parsed.error;
+      continue;
+    }
+    if (!isStructured(parsed.value)) {
+      primitives.push({ value: parsed.value, extracted: candidate });
+      continue;
+    }
+    try {
+      return validate(parsed.value);
+    } catch (err) {
+      lastStage = "validate";
+      lastError = err;
+    }
+  }
+  for (const p of primitives) {
+    lastCandidate = p.extracted;
+    try {
+      return validate(p.value);
+    } catch (err) {
+      lastStage = "validate";
+      lastError = err;
+    }
+  }
+  throw new LlmJsonExtractError({
+    message: `${lastStage === "parse" ? "JSON.parse" : "Validation"} failed for all candidates: ${
+      lastError instanceof Error ? lastError.message : String(lastError)
+    }`,
+    stage: lastStage,
+    raw: text,
+    extracted: lastCandidate,
+    cause: lastError,
+  });
 }
 
 // ---------- internals ----------
@@ -194,25 +285,42 @@ function findAllTagMatches(text: string, tags: readonly string[]): TagMatch[] {
   return out;
 }
 
-function matchCodeFence(text: string): string | null {
-  // Prefer explicit ```json fences; fall back to bare ``` fences.
-  const labeled = text.match(/```json[ \t]*\r?\n([\s\S]*?)```/i);
-  if (labeled?.[1] !== undefined) return labeled[1];
-  const bare = text.match(/```[ \t]*\r?\n([\s\S]*?)```/);
-  if (bare?.[1] !== undefined) return bare[1];
-  return null;
+function findAllCodeFences(text: string): string[] {
+  const labeled: { body: string; start: number }[] = [];
+  const bare: { body: string; start: number }[] = [];
+  // Labeled ```json fences (case-insensitive) take priority.
+  for (const m of text.matchAll(/```json[ \t]*\r?\n([\s\S]*?)```/gi)) {
+    if (m[1] !== undefined && m.index !== undefined) {
+      labeled.push({ body: m[1], start: m.index });
+    }
+  }
+  // Bare ``` fences that don't have a language tag.
+  for (const m of text.matchAll(/```[ \t]*\r?\n([\s\S]*?)```/g)) {
+    if (m[1] !== undefined && m.index !== undefined) {
+      bare.push({ body: m[1], start: m.index });
+    }
+  }
+  labeled.sort((a, b) => a.start - b.start);
+  bare.sort((a, b) => a.start - b.start);
+  return [...labeled.map((x) => x.body), ...bare.map((x) => x.body)];
 }
 
-function extractBareJson(text: string): string | null {
-  // Scan for the first '{' or '[' and walk forward respecting strings/escapes.
-  for (let i = 0; i < text.length; i++) {
+function findAllBareJson(text: string): string[] {
+  const out: string[] = [];
+  let i = 0;
+  while (i < text.length) {
     const ch = text[i];
     if (ch === "{" || ch === "[") {
       const end = findBalancedEnd(text, i);
-      if (end !== null) return text.slice(i, end + 1);
+      if (end !== null) {
+        out.push(text.slice(i, end + 1));
+        i = end + 1;
+        continue;
+      }
     }
+    i++;
   }
-  return null;
+  return out;
 }
 
 function findBalancedEnd(text: string, start: number): number | null {
@@ -244,6 +352,22 @@ function findBalancedEnd(text: string, start: number): number | null {
     }
   }
   return null;
+}
+
+function isStructured(value: unknown): boolean {
+  return typeof value === "object" && value !== null;
+}
+
+function tryParse(
+  candidate: string,
+  repair: boolean,
+): { ok: true; value: unknown } | { ok: false; error: unknown } {
+  const input = repair ? safeRepair(candidate) : candidate;
+  try {
+    return { ok: true, value: JSON.parse(input) };
+  } catch (err) {
+    return { ok: false, error: err };
+  }
 }
 
 function safeRepair(input: string): string {
