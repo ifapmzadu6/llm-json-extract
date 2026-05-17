@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-05-18
+
+### Changed
+
+- Dev-only: bump dev dependencies via Dependabot — `zod` 3 → 4, `vitest`
+  2 → 4, `@types/node` 22 → 25. TypeScript pinned at 5.x pending tsup
+  compatibility with TS 6 (tsup's dts plugin currently emits a TS5101
+  deprecation error under TS 6). No runtime impact for library consumers.
+
 ## [0.5.0] - 2026-05-18
 
 ### Fixed
@@ -75,6 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Initial release.
 
+[0.5.1]: https://github.com/ifapmzadu6/llm-json-extract/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/ifapmzadu6/llm-json-extract/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ifapmzadu6/llm-json-extract/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ifapmzadu6/llm-json-extract/compare/v0.2.0...v0.3.0
