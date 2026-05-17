@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-05-18
+
+### Added
+
+- `extractJsonWith` now accepts a schema-like object directly (anything with a
+  `.parse(unknown) => T` method, e.g. a zod schema). This sidesteps the
+  `@typescript-eslint/unbound-method` warning that fires when passing
+  `Schema.parse` as a bare callback, and reads more naturally:
+
+  ```ts
+  // before
+  extractJsonWith(text, Schema.parse);          // works, but unbound-method warns
+  extractJsonWith(text, (x) => Schema.parse(x)); // ugly
+
+  // after
+  extractJsonWith(text, Schema);                // clean
+  ```
+
+  The existing `(value: unknown) => T` function form continues to work
+  unchanged (used for valibot / arktype / ad-hoc validators).
+- `Validator<T>` interface exported for typing custom schema-like objects.
+
 ## [0.5.2] - 2026-05-18
 
 ### Changed

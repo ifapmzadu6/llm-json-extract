@@ -155,6 +155,35 @@ describe("extractJsonWith (validation)", () => {
     expect(u).toEqual({ name: "taro", age: 32 });
   });
 
+  it("accepts a schema-like object directly (no .parse unwrap)", () => {
+    const text = `<result>{"name":"taro","age":32}</result>`;
+    // Passing the zod schema as-is — library detects `.parse` method.
+    const u = extractJsonWith(text, User);
+    expect(u).toEqual({ name: "taro", age: 32 });
+  });
+
+  it("accepts a custom { parse } validator", () => {
+    const text = `<result>{"x":1}</result>`;
+    const schema = {
+      parse: (v: unknown): { x: number } => {
+        if (typeof v !== "object" || v === null || !("x" in v)) throw new Error("bad");
+        return v as { x: number };
+      },
+    };
+    expect(extractJsonWith(text, schema)).toEqual({ x: 1 });
+  });
+
+  it("schema-direct path surfaces validate-stage errors the same way", () => {
+    const text = `<result>{"name":"taro"}</result>`;
+    try {
+      extractJsonWith(text, User);
+      expect.fail("should throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(LlmJsonExtractError);
+      expect((e as LlmJsonExtractError).stage).toBe("validate");
+    }
+  });
+
   it("validates with a plain function", () => {
     const text = `<result>[1,2,3]</result>`;
     const arr = extractJsonWith(text, (v): number[] => {

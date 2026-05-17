@@ -185,9 +185,24 @@ export function extractJson(text: string, options: ExtractOptions = {}): unknown
 }
 
 /**
- * Extract, parse, and validate JSON from LLM output with a user-supplied
- * validator. Works with any schema library — pass `schema.parse` for zod,
- * `(x) => v.parse(schema, x)` for valibot, etc.
+ * Schema-like object exposing a `parse(unknown) => T` method.
+ *
+ * Matches the shape of zod (`z.ZodType`), or any custom validator that
+ * follows the same convention. Pass the schema directly to
+ * {@link extractJsonWith} instead of `(x) => schema.parse(x)` — the
+ * library binds the call internally so `this` is preserved and TypeScript's
+ * `unbound-method` lint rule is sidestepped.
+ */
+export interface Validator<T> {
+  parse: (value: unknown) => T;
+}
+
+/**
+ * Extract, parse, and validate JSON from LLM output.
+ *
+ * Accepts either:
+ *  - a {@link Validator} (anything with a `.parse(unknown) => T` method, e.g. a zod schema), or
+ *  - a plain `(unknown) => T` function (for valibot, arktype, ad-hoc checks, etc.).
  *
  * Candidates that parse but fail validation are skipped in favor of the
  * next candidate. This handles cases where an earlier candidate happens
@@ -195,14 +210,31 @@ export function extractJson(text: string, options: ExtractOptions = {}): unknown
  * prose).
  *
  * @example
+ *   // zod (or anything with `.parse`): pass the schema directly
  *   const User = z.object({ name: z.string(), age: z.number() });
- *   const user = extractJsonWith(text, User.parse);
+ *   const user = extractJsonWith(text, User);
+ *
+ * @example
+ *   // valibot: wrap in a function
+ *   const user = extractJsonWith(text, (x) => v.parse(UserSchema, x));
  */
 export function extractJsonWith<T>(
   text: string,
+  validator: Validator<T>,
+  options?: ExtractOptions,
+): T;
+export function extractJsonWith<T>(
+  text: string,
   validate: (value: unknown) => T,
+  options?: ExtractOptions,
+): T;
+export function extractJsonWith<T>(
+  text: string,
+  validator: Validator<T> | ((value: unknown) => T),
   options: ExtractOptions = {},
 ): T {
+  const validate: (value: unknown) => T =
+    typeof validator === "function" ? validator : (x) => validator.parse(x);
   const candidates = extractJsonCandidates(text, options);
   if (candidates.length === 0) {
     throw new LlmJsonExtractError({

@@ -35,7 +35,7 @@ import { extractJsonWith } from "llm-json-extract";
 import { z } from "zod";
 
 const Schema = z.object({ items: z.array(z.string()), count: z.number() });
-const value = extractJsonWith(text, Schema.parse);
+const value = extractJsonWith(text, Schema);
 // fully typed, validated
 ```
 
@@ -137,8 +137,11 @@ const User = z.object({
   hobbies: z.array(z.string()),
 });
 
-const user = extractJsonWith(modelOutput, User.parse);
+const user = extractJsonWith(modelOutput, User);
 //    ^ type is z.infer<typeof User>
+
+// `User.parse` also works if you prefer the function form:
+// const user = extractJsonWith(modelOutput, User.parse);
 ```
 
 ### Extract + validate (valibot)
@@ -199,7 +202,7 @@ const out = execSync(`codex exec "List 3 fruits as <result>{...}</result>"`, {
 });
 
 const Schema = z.object({ items: z.array(z.string()) });
-const { items } = extractJsonWith(out, Schema.parse);
+const { items } = extractJsonWith(out, Schema);
 ```
 
 ## Options
