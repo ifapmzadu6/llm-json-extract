@@ -66,26 +66,27 @@ yarn add llm-json-extract
 
 ### Prompt the model
 
-The library is most reliable when the model wraps its answer in `<result>` tags. Below are prompt snippets that work well across Claude, GPT, and Codex CLI. **Tip:** even when you allow reasoning before the answer, this library's `pickLast` default selects the *last* `<result>` block in the output, so you don't have to police the model about not "showing its work."
+The whole point of this library is that **the model doesn't need to output JSON only** — it can think out loud, explain itself, apologize, add a friendly closing line, whatever. As long as the actual answer is wrapped in `<result>...</result>` somewhere, you'll get clean JSON out. This is a feature, not a bug: forcing JSON-only output often degrades answer quality, especially for reasoning-heavy tasks.
 
-**Minimal — just the answer:**
+**Minimal — wrap the answer, prose is fine:**
 
 ```text
-Reply with ONLY a JSON object wrapped in <result>...</result>. No prose before or after the tags.
+Wrap your final JSON answer in <result>...</result>. You can explain
+your reasoning freely before or after.
 ```
 
-**With reasoning allowed (recommended):**
+**Encourage reasoning (often improves quality):**
 
 ```text
-You may think first inside <thinking>...</thinking>.
-Then output the FINAL answer as JSON wrapped in <result>...</result>.
-Nothing else after </result>.
+Think through the problem step by step. When you're ready, put the
+final JSON answer in <result>...</result>. You don't need to suppress
+your reasoning — anything outside the tags is ignored.
 ```
 
-**With a schema (most reliable):**
+**With a schema:**
 
 ```text
-Output JSON matching this schema, wrapped in <result>...</result>:
+Return JSON matching this schema, wrapped in <result>...</result>:
 
 {
   "name": string,
@@ -93,19 +94,19 @@ Output JSON matching this schema, wrapped in <result>...</result>:
   "hobbies": string[]
 }
 
-Rules:
-- No explanation outside the <result> tags.
-- Use double quotes. No trailing commas (we tolerate them, but stricter is safer).
-- If a field is unknown, use null (not "unknown" or "").
+Trailing commas, comments, and single quotes are tolerated. Prose
+outside the tags is fine.
 ```
 
-**For multi-step / agent runs (avoid example collisions):**
+**Avoid example-echo collisions:**
 
-If your prompt includes an example like `<result>{"score": 0}</result>`, the model may echo it. `pickLast` will still grab the real answer, but if you want to be explicit, use a distinct tag for the example:
+If your prompt shows an example like `<result>{"score": 0}</result>`, the model may echo it as part of its reasoning. `pickLast` (default) grabs the **last** `<result>` block, which is normally the real answer — but you can be explicit by using a different tag for the example:
 
 ```text
-Example format (do not copy values): <example>{"score": 0}</example>
-Reply with the real answer in <result>...</result>.
+Example format (do not copy these values):
+<example>{"score": 0}</example>
+
+Your real answer goes in <result>...</result>.
 ```
 
 ### Extract
