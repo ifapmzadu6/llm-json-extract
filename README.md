@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/llm-json-extract.svg)](https://www.npmjs.com/package/llm-json-extract)
 [![license](https://img.shields.io/npm/l/llm-json-extract.svg)](./LICENSE)
 
-Extract and validate JSON from messy LLM output.
+Extract and validate JSON from messy LLM output — **the model is free to think out loud, explain itself, or wrap its answer in prose.** As long as the actual JSON is somewhere in the response (ideally inside `<result>...</result>` tags), you'll get a clean parsed object back.
 
 Designed for workflows where **provider-native structured output is not available** — Claude Code CLI, Codex CLI, agent frameworks, or any pipeline that asks a model for JSON via prompt rather than `tool_use` / `response_format`.
 
@@ -39,18 +39,21 @@ const value = extractJsonWith(text, Schema.parse);
 
 The Anthropic API has `tool_use`. OpenAI has Structured Outputs. **But CLIs don't expose them.** If you're shelling out to `claude -p` or `codex exec` from a batch script, the only thing you get back is free-form text — possibly with reasoning, prose, code fences, or trailing commas mixed in.
 
+And even when you *can* enforce JSON-only output, doing so often hurts answer quality on reasoning-heavy tasks. Letting the model think freely and just **pulling the JSON back out of its response** is usually the better trade-off.
+
 This package implements the de-facto pattern Anthropic recommends in [their docs](https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering/use-xml-tags): **ask the model to wrap its answer in an XML tag, then extract it.** With fallbacks for the common cases where the model didn't quite follow instructions.
 
 ## Features
 
+- **Prose-tolerant by design** — the model can think out loud; only the tagged answer is extracted
 - **XML tag aware** — finds `<result>...</result>`, `<json>...</json>`, etc. (configurable)
 - **Multi-stage fallbacks** — tag → fenced code block → bare `{...}` / `[...]` in raw text
-- **`pickLast` heuristic** — when the model echoes a prompt example, picks the *real* answer
+- **Document-position `pickLast`** — when the model echoes a prompt example, picks the *real* answer at the end
 - **`jsonrepair` integrated** — fixes trailing commas, single quotes, comments, unquoted keys
 - **Schema-agnostic validation** — pass `zod.parse`, `valibot`, `arktype`, or any `(unknown) => T`
 - **No required peer deps** — works standalone, opt-in validation
 - **Typed errors** — `LlmJsonExtractError` with `stage` (`extract` / `parse` / `validate`) and the raw text for debugging
-- **ESM + CJS** dual build, full `.d.ts`
+- **ESM + CJS** dual build, full `.d.ts`, npm provenance signed
 
 ## Install
 
