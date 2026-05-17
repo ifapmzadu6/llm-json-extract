@@ -336,7 +336,10 @@ function findBalancedEnd(text: string, start: number): number | null {
       escaped = false;
       continue;
     }
-    if (ch === "\\") {
+    // Backslash is only an escape character inside JSON strings; outside, it's
+    // just literal text. Treating it as escape unconditionally would skip the
+    // next character in surrounding prose and could miscount brace balance.
+    if (ch === "\\" && inString) {
       escaped = true;
       continue;
     }

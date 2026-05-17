@@ -1,6 +1,10 @@
 # llm-json-extract
 
 [![npm version](https://img.shields.io/npm/v/llm-json-extract.svg)](https://www.npmjs.com/package/llm-json-extract)
+[![CI](https://github.com/ifapmzadu6/llm-json-extract/actions/workflows/ci.yml/badge.svg)](https://github.com/ifapmzadu6/llm-json-extract/actions/workflows/ci.yml)
+[![npm downloads](https://img.shields.io/npm/dm/llm-json-extract.svg)](https://www.npmjs.com/package/llm-json-extract)
+[![bundle size](https://img.shields.io/bundlejs/size/llm-json-extract?label=min%2Bgzip)](https://bundlejs.com/?q=llm-json-extract)
+[![types](https://img.shields.io/npm/types/llm-json-extract.svg)](https://www.npmjs.com/package/llm-json-extract)
 [![license](https://img.shields.io/npm/l/llm-json-extract.svg)](./LICENSE)
 
 Extract and validate JSON from messy LLM output — **the model is free to think out loud, explain itself, or wrap its answer in prose.** As long as the actual JSON is somewhere in the response (ideally inside `<result>...</result>` tags), you'll get a clean parsed object back.

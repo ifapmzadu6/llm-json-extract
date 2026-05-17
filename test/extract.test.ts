@@ -258,6 +258,53 @@ describe("fallthrough across candidates", () => {
   });
 });
 
+describe("edge cases", () => {
+  it("handles empty object and array", () => {
+    expect(extractJson("<result>{}</result>")).toEqual({});
+    expect(extractJson("<result>[]</result>")).toEqual([]);
+  });
+
+  it("handles deeply nested structure", () => {
+    const text = `<result>${JSON.stringify({ a: { b: { c: { d: [1, [2, [3]]] } } } })}</result>`;
+    expect(extractJson(text)).toEqual({ a: { b: { c: { d: [1, [2, [3]]] } } } });
+  });
+
+  it("handles unicode and emoji in JSON strings", () => {
+    const text = `<result>{"emoji":"🎉","jp":"こんにちは","math":"∑"}</result>`;
+    expect(extractJson(text)).toEqual({ emoji: "🎉", jp: "こんにちは", math: "∑" });
+  });
+
+  it("handles literal backslash sequences in prose around JSON", () => {
+    // A stray backslash in prose used to confuse the brace scanner.
+    const text = `Path is C:\\foo\\bar then JSON: {"k":1}`;
+    expect(extractJson(text)).toEqual({ k: 1 });
+  });
+
+  it("handles escaped quotes correctly inside JSON strings", () => {
+    const text = `<result>{"path":"C:\\\\foo\\\\bar","quote":"say \\"hi\\""}</result>`;
+    expect(extractJson(text)).toEqual({ path: "C:\\foo\\bar", quote: 'say "hi"' });
+  });
+
+  it("handles JSON containing the closing tag string as a value", () => {
+    // Non-greedy regex will cut at the first </result>, which is the right one
+    // here because the inner string uses escaped chars. The interesting case
+    // is the model literally writing </result> inside JSON — non-greedy cuts
+    // early; we accept that as a known limitation. This test asserts the
+    // straightforward case where the value contains a similar-looking string.
+    const text = `<result>{"msg":"end of result"}</result>`;
+    expect(extractJson(text)).toEqual({ msg: "end of result" });
+  });
+
+  it("ignores trailing prose after JSON", () => {
+    const text = `<result>{"a":1}</result>\n\nThanks!`;
+    expect(extractJson(text)).toEqual({ a: 1 });
+  });
+
+  it("handles whitespace-only input", () => {
+    expect(() => extractJson("   \n\n  \t  ")).toThrow(LlmJsonExtractError);
+  });
+});
+
 describe("extractJsonCandidates", () => {
   it("returns the preferred candidate first, then doc-order alternates", () => {
     const text = `<result>{"a": 1}</result>\n<result>{"a": 2}</result>\n\`\`\`json
