@@ -20,8 +20,8 @@ const text = `
 </result>
 `;
 
-extractJson(text);
-// { items: ["apple", "banana", "cherry"], count: 3 }
+const data = extractJson(text);
+// data === { items: ["apple", "banana", "cherry"], count: 3 }
 ```
 
 With a schema:
