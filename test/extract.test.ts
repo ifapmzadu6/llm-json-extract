@@ -126,6 +126,10 @@ describe("extractJson (parse)", () => {
     });
   });
 
+  it("keeps repairable bare JSON candidates with missing nested closers", () => {
+    expect(extractJson("{a: [1, 2}")).toEqual({ a: [1, 2] });
+  });
+
   it("repair=false rejects malformed input", () => {
     expect(() => extractJson("<result>{a: 1}</result>", { repair: false })).toThrow(
       LlmJsonExtractError,
@@ -315,13 +319,25 @@ describe("edge cases", () => {
   });
 
   it("handles JSON containing the closing tag string as a value", () => {
-    // Non-greedy regex will cut at the first </result>, which is the right one
-    // here because the inner string uses escaped chars. The interesting case
-    // is the model literally writing </result> inside JSON — non-greedy cuts
-    // early; we accept that as a known limitation. This test asserts the
-    // straightforward case where the value contains a similar-looking string.
-    const text = `<result>{"msg":"end of result"}</result>`;
-    expect(extractJson(text)).toEqual({ msg: "end of result" });
+    const text = `<result>{"msg":"literal </result> inside"}</result>`;
+    expect(extractJsonString(text)).toBe('{"msg":"literal </result> inside"}');
+    expect(extractJson(text)).toEqual({ msg: "literal </result> inside" });
+  });
+
+  it("handles top-level JSON strings containing the closing tag string", () => {
+    const text = `<result>"literal </result> inside"</result>`;
+    expect(extractJsonString(text)).toBe('"literal </result> inside"');
+    expect(extractJson(text)).toBe("literal </result> inside");
+  });
+
+  it("handles comments with quotes and braces in bare JSON", () => {
+    const text = `{
+      // comment with " and }
+      "a": 1,
+      /* another comment with " and ] */
+      "b": 2,
+    }`;
+    expect(extractJson(text)).toEqual({ a: 1, b: 2 });
   });
 
   it("ignores trailing prose after JSON", () => {
@@ -350,6 +366,23 @@ describe("extractJsonCandidates", () => {
     const text = `<result>{"a":1}</result>\n{"a":1}`;
     const cands = extractJsonCandidates(text);
     expect(cands).toEqual(['{"a":1}']);
+  });
+
+  it("recovers a valid bare JSON candidate after an unclosed opener", () => {
+    const text = `bad prefix { never closes, then {"ok":true}`;
+    expect(extractJsonCandidates(text)).toEqual(['{"ok":true}']);
+  });
+
+  it("returns only the outermost bare JSON candidate for nested objects", () => {
+    const text = `before {"a":{"b":1},"c":[{"d":2}]} after`;
+    expect(extractJsonCandidates(text)).toEqual(['{"a":{"b":1},"c":[{"d":2}]}']);
+  });
+
+  it("keeps deeply mismatched tag bodies as a single candidate", () => {
+    const body = `${"[".repeat(1000)}${"}".repeat(1000)}`;
+    expect(extractJsonCandidates(`<result>${body}</result>`, { tryBareJson: false })).toEqual([
+      body,
+    ]);
   });
 
   it("returns empty array when nothing JSON-like", () => {
