@@ -34,6 +34,7 @@ With a schema:
 import { extractJsonWith } from "llm-json-extract";
 import { z } from "zod";
 
+// llmOutput is defined in the example above
 const Schema = z.object({ items: z.array(z.string()), count: z.number() });
 const value = extractJsonWith(llmOutput, Schema);
 // fully typed, validated
@@ -122,7 +123,7 @@ Your real answer goes in <result>...</result>.
 ```ts
 import { extractJson } from "llm-json-extract";
 
-const data = extractJson(modelOutput);
+const data = extractJson(llmOutput); // returns unknown — cast or validate as needed
 ```
 
 ### Extract + validate (zod)
@@ -137,11 +138,11 @@ const User = z.object({
   hobbies: z.array(z.string()),
 });
 
-const user = extractJsonWith(modelOutput, User);
+const user = extractJsonWith(llmOutput, User);
 //    ^ type is z.infer<typeof User>
 
 // `User.parse` also works if you prefer the function form:
-// const user = extractJsonWith(modelOutput, User.parse);
+// const user = extractJsonWith(llmOutput, User.parse);
 ```
 
 ### Extract + validate (valibot)
@@ -151,7 +152,17 @@ import { extractJsonWith } from "llm-json-extract";
 import * as v from "valibot";
 
 const User = v.object({ name: v.string(), age: v.number() });
-const user = extractJsonWith(modelOutput, (x) => v.parse(User, x));
+const user = extractJsonWith(llmOutput, (x) => v.parse(User, x));
+```
+
+### Extract + validate (arktype)
+
+```ts
+import { extractJsonWith } from "llm-json-extract";
+import { type } from "arktype";
+
+const User = type({ name: "string", age: "number" });
+const user = extractJsonWith(llmOutput, (x) => User.assert(x));
 ```
 
 ### Just the string (for piping)
@@ -159,7 +170,7 @@ const user = extractJsonWith(modelOutput, (x) => v.parse(User, x));
 ```ts
 import { extractJsonString } from "llm-json-extract";
 
-const jsonStr = extractJsonString(modelOutput); // string | null — not parsed
+const jsonStr = extractJsonString(llmOutput); // string | null — not parsed
 ```
 
 ### All candidates (advanced)
@@ -167,7 +178,7 @@ const jsonStr = extractJsonString(modelOutput); // string | null — not parsed
 ```ts
 import { extractJsonCandidates } from "llm-json-extract";
 
-const candidates = extractJsonCandidates(modelOutput);
+const candidates = extractJsonCandidates(llmOutput);
 // e.g. ["<final answer>", "<earlier echo>", "<fence body>", "<stray bare JSON>"]
 ```
 
@@ -207,6 +218,8 @@ const { items } = extractJsonWith(out, Schema);
 
 ## Options
 
+All options are optional — the values below are the defaults:
+
 ```ts
 extractJson(llmOutput, {
   tags: ["result", "json", "output"], // tag names; document position decides priority (not list order)
@@ -223,12 +236,12 @@ extractJson(llmOutput, {
 import { LlmJsonExtractError } from "llm-json-extract";
 
 try {
-  extractJson(llmOutput);
+  const data = extractJson(llmOutput);
 } catch (e) {
   if (e instanceof LlmJsonExtractError) {
-    e.stage;     // "extract" | "parse" | "validate"
-    e.raw;       // the original input
-    e.extracted; // the substring we tried to parse (or null)
+    console.error(e.stage);     // "extract" | "parse" | "validate"
+    console.error(e.raw);       // the original input
+    console.error(e.extracted); // the substring we tried to parse (or null)
   }
 }
 ```
