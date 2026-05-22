@@ -14,7 +14,7 @@ Designed for workflows where **provider-native structured output is not availabl
 ```ts
 import { extractJson } from "llm-json-extract";
 
-const text = `
+const llmOutput = `
 <thinking>The user wants a list of fruits...</thinking>
 <result>
 {
@@ -24,7 +24,7 @@ const text = `
 </result>
 `;
 
-const data = extractJson(text);
+const data = extractJson(llmOutput);
 // data === { items: ["apple", "banana", "cherry"], count: 3 }
 ```
 
@@ -35,7 +35,7 @@ import { extractJsonWith } from "llm-json-extract";
 import { z } from "zod";
 
 const Schema = z.object({ items: z.array(z.string()), count: z.number() });
-const value = extractJsonWith(text, Schema);
+const value = extractJsonWith(llmOutput, Schema);
 // fully typed, validated
 ```
 
@@ -208,7 +208,7 @@ const { items } = extractJsonWith(out, Schema);
 ## Options
 
 ```ts
-extractJson(text, {
+extractJson(llmOutput, {
   tags: ["result", "json", "output"], // tag names; document position decides priority (not list order)
   pickLast: true,         // when multiple matches, prefer the one closer to the end
   tryCodeFence: true,     // also collect ```json``` / ``` ``` blocks as candidates
@@ -223,7 +223,7 @@ extractJson(text, {
 import { LlmJsonExtractError } from "llm-json-extract";
 
 try {
-  extractJson(text);
+  extractJson(llmOutput);
 } catch (e) {
   if (e instanceof LlmJsonExtractError) {
     e.stage;     // "extract" | "parse" | "validate"
