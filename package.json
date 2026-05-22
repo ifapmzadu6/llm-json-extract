@@ -51,6 +51,7 @@
   "scripts": {
     "build": "tsup",
     "test": "vitest run",
+    "test:smoke": "node test/smoke.mjs",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
