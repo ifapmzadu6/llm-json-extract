@@ -339,6 +339,12 @@ function findTagClose(
       return findClosingTag(text, tag, jsonEnd + 1);
     }
   }
+  if (first === '"') {
+    const stringEnd = findJsonStringEnd(text, jsonStart);
+    if (stringEnd !== null) {
+      return findClosingTag(text, tag, stringEnd + 1);
+    }
+  }
   return findClosingTag(text, tag, bodyStart);
 }
 
@@ -359,6 +365,25 @@ function skipWhitespace(text: string, start: number): number {
   let i = start;
   while (i < text.length && /\s/.test(text[i] ?? "")) i++;
   return i;
+}
+
+function findJsonStringEnd(text: string, start: number): number | null {
+  if (text[start] !== '"') return null;
+  let escaped = false;
+  for (let i = start + 1; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === undefined) break;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') return i;
+  }
+  return null;
 }
 
 function findAllCodeFences(text: string): string[] {
@@ -383,7 +408,9 @@ function findAllCodeFences(text: string): string[] {
 
 function findAllBareJson(text: string): string[] {
   const spans: { start: number; end: number }[] = [];
-  const stack: { start: number; expected: "}" | "]" }[] = [];
+  const stack: StackFrame[] = [];
+  let lastBraceIndex = -1;
+  let lastBracketIndex = -1;
   let inString = false;
   let escaped = false;
   let lineComment = false;
@@ -393,7 +420,12 @@ function findAllBareJson(text: string): string[] {
     if (ch === undefined) break;
     if (stack.length === 0) {
       if (ch === "{" || ch === "[") {
-        stack.push({ start: i, expected: ch === "{" ? "}" : "]" });
+        const state = pushStackFrame(stack, i, ch === "{" ? "}" : "]", {
+          lastBraceIndex,
+          lastBracketIndex,
+        });
+        lastBraceIndex = state.lastBraceIndex;
+        lastBracketIndex = state.lastBracketIndex;
         inString = false;
         escaped = false;
         lineComment = false;
@@ -437,13 +469,20 @@ function findAllBareJson(text: string): string[] {
       continue;
     }
     if (ch === "{" || ch === "[") {
-      stack.push({ start: i, expected: ch === "{" ? "}" : "]" });
+      const state = pushStackFrame(stack, i, ch === "{" ? "}" : "]", {
+        lastBraceIndex,
+        lastBracketIndex,
+      });
+      lastBraceIndex = state.lastBraceIndex;
+      lastBracketIndex = state.lastBracketIndex;
       continue;
     }
     if (ch === "}" || ch === "]") {
-      const matchingIndex = findExpectedFrameIndex(stack, ch);
+      const matchingIndex = ch === "}" ? lastBraceIndex : lastBracketIndex;
       if (matchingIndex === -1) {
         stack.length = 0;
+        lastBraceIndex = -1;
+        lastBracketIndex = -1;
         inString = false;
         escaped = false;
         lineComment = false;
@@ -453,6 +492,8 @@ function findAllBareJson(text: string): string[] {
       const span = stack[matchingIndex];
       if (span !== undefined) spans.push({ start: span.start, end: i });
       stack.length = matchingIndex;
+      lastBraceIndex = span?.prevBraceIndex ?? -1;
+      lastBracketIndex = span?.prevBracketIndex ?? -1;
       if (stack.length === 0) {
         inString = false;
         escaped = false;
@@ -467,7 +508,15 @@ function findAllBareJson(text: string): string[] {
 function findBalancedEnd(text: string, start: number): number | null {
   const open = text[start];
   if (open !== "{" && open !== "[") return null;
-  const stack: ("}" | "]")[] = [open === "{" ? "}" : "]"];
+  const stack: StackFrame[] = [];
+  let lastBraceIndex = -1;
+  let lastBracketIndex = -1;
+  let state = pushStackFrame(stack, start, open === "{" ? "}" : "]", {
+    lastBraceIndex,
+    lastBracketIndex,
+  });
+  lastBraceIndex = state.lastBraceIndex;
+  lastBracketIndex = state.lastBracketIndex;
   let inString = false;
   let escaped = false;
   let lineComment = false;
@@ -513,32 +562,47 @@ function findBalancedEnd(text: string, start: number): number | null {
       continue;
     }
     if (ch === "{" || ch === "[") {
-      stack.push(ch === "{" ? "}" : "]");
+      state = pushStackFrame(stack, i, ch === "{" ? "}" : "]", {
+        lastBraceIndex,
+        lastBracketIndex,
+      });
+      lastBraceIndex = state.lastBraceIndex;
+      lastBracketIndex = state.lastBracketIndex;
     } else if (ch === "}" || ch === "]") {
-      const matchingIndex = findExpectedIndex(stack, ch);
+      const matchingIndex = ch === "}" ? lastBraceIndex : lastBracketIndex;
       if (matchingIndex === -1) continue;
+      const frame = stack[matchingIndex];
       stack.length = matchingIndex;
+      lastBraceIndex = frame?.prevBraceIndex ?? -1;
+      lastBracketIndex = frame?.prevBracketIndex ?? -1;
       if (stack.length === 0) return i;
     }
   }
   return null;
 }
 
-function findExpectedFrameIndex(
-  stack: readonly { expected: "}" | "]" }[],
-  close: "}" | "]",
-): number {
-  for (let i = stack.length - 1; i >= 0; i--) {
-    if (stack[i]?.expected === close) return i;
-  }
-  return -1;
+interface StackFrame {
+  start: number;
+  prevBraceIndex: number;
+  prevBracketIndex: number;
 }
 
-function findExpectedIndex(stack: readonly ("}" | "]")[], close: "}" | "]"): number {
-  for (let i = stack.length - 1; i >= 0; i--) {
-    if (stack[i] === close) return i;
+function pushStackFrame(
+  stack: StackFrame[],
+  start: number,
+  expected: "}" | "]",
+  state: { lastBraceIndex: number; lastBracketIndex: number },
+): { lastBraceIndex: number; lastBracketIndex: number } {
+  const nextIndex = stack.length;
+  stack.push({
+    start,
+    prevBraceIndex: state.lastBraceIndex,
+    prevBracketIndex: state.lastBracketIndex,
+  });
+  if (expected === "}") {
+    return { lastBraceIndex: nextIndex, lastBracketIndex: state.lastBracketIndex };
   }
-  return -1;
+  return { lastBraceIndex: state.lastBraceIndex, lastBracketIndex: nextIndex };
 }
 
 function outermostSpans(spans: { start: number; end: number }[]): { start: number; end: number }[] {

@@ -324,6 +324,12 @@ describe("edge cases", () => {
     expect(extractJson(text)).toEqual({ msg: "literal </result> inside" });
   });
 
+  it("handles top-level JSON strings containing the closing tag string", () => {
+    const text = `<result>"literal </result> inside"</result>`;
+    expect(extractJsonString(text)).toBe('"literal </result> inside"');
+    expect(extractJson(text)).toBe("literal </result> inside");
+  });
+
   it("handles comments with quotes and braces in bare JSON", () => {
     const text = `{
       // comment with " and }
@@ -370,6 +376,13 @@ describe("extractJsonCandidates", () => {
   it("returns only the outermost bare JSON candidate for nested objects", () => {
     const text = `before {"a":{"b":1},"c":[{"d":2}]} after`;
     expect(extractJsonCandidates(text)).toEqual(['{"a":{"b":1},"c":[{"d":2}]}']);
+  });
+
+  it("keeps deeply mismatched tag bodies as a single candidate", () => {
+    const body = `${"[".repeat(1000)}${"}".repeat(1000)}`;
+    expect(extractJsonCandidates(`<result>${body}</result>`, { tryBareJson: false })).toEqual([
+      body,
+    ]);
   });
 
   it("returns empty array when nothing JSON-like", () => {
