@@ -303,18 +303,62 @@ function findAllTagMatches(text: string, tags: readonly string[]): TagMatch[] {
   const out: TagMatch[] = [];
   for (const tag of tags) {
     const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const re = new RegExp(`<${escaped}(?:\\s[^>]*)?>([\\s\\S]*?)</${escaped}>`, "gi");
-    for (const m of text.matchAll(re)) {
-      if (m[1] !== undefined && m.index !== undefined) {
-        out.push({
-          body: m[1],
-          start: m.index,
-          end: m.index + m[0].length,
-        });
+    const openRe = new RegExp(`<${escaped}(?:\\s[^>]*)?>`, "gi");
+    let m = openRe.exec(text);
+    while (m !== null) {
+      const start = m.index;
+      const bodyStart = start + m[0].length;
+      const close = findTagClose(text, tag, bodyStart);
+      if (close === null) {
+        openRe.lastIndex = bodyStart;
+        m = openRe.exec(text);
+        continue;
       }
+      out.push({
+        body: text.slice(bodyStart, close.start),
+        start,
+        end: close.end,
+      });
+      openRe.lastIndex = close.end;
+      m = openRe.exec(text);
     }
   }
   return out;
+}
+
+function findTagClose(
+  text: string,
+  tag: string,
+  bodyStart: number,
+): { start: number; end: number } | null {
+  const jsonStart = skipWhitespace(text, bodyStart);
+  const first = text[jsonStart];
+  if (first === "{" || first === "[") {
+    const jsonEnd = findBalancedEnd(text, jsonStart);
+    if (jsonEnd !== null) {
+      return findClosingTag(text, tag, jsonEnd + 1);
+    }
+  }
+  return findClosingTag(text, tag, bodyStart);
+}
+
+function findClosingTag(
+  text: string,
+  tag: string,
+  startFrom: number,
+): { start: number; end: number } | null {
+  const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const closeRe = new RegExp(`</${escaped}>`, "gi");
+  closeRe.lastIndex = startFrom;
+  const m = closeRe.exec(text);
+  if (m === null) return null;
+  return { start: m.index, end: m.index + m[0].length };
+}
+
+function skipWhitespace(text: string, start: number): number {
+  let i = start;
+  while (i < text.length && /\s/.test(text[i] ?? "")) i++;
+  return i;
 }
 
 function findAllCodeFences(text: string): string[] {
@@ -338,34 +382,112 @@ function findAllCodeFences(text: string): string[] {
 }
 
 function findAllBareJson(text: string): string[] {
-  const out: string[] = [];
-  let i = 0;
-  while (i < text.length) {
+  const spans: { start: number; end: number }[] = [];
+  const stack: { start: number; expected: "}" | "]" }[] = [];
+  let inString = false;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+  for (let i = 0; i < text.length; i++) {
     const ch = text[i];
+    if (ch === undefined) break;
+    if (stack.length === 0) {
+      if (ch === "{" || ch === "[") {
+        stack.push({ start: i, expected: ch === "{" ? "}" : "]" });
+        inString = false;
+        escaped = false;
+        lineComment = false;
+        blockComment = false;
+      }
+      continue;
+    }
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (lineComment) {
+      if (ch === "\n" || ch === "\r") lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      if (ch === "*" && text[i + 1] === "/") {
+        blockComment = false;
+        i++;
+      }
+      continue;
+    }
+    if (ch === "\\" && inString) {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === "/" && text[i + 1] === "/") {
+      lineComment = true;
+      i++;
+      continue;
+    }
+    if (ch === "/" && text[i + 1] === "*") {
+      blockComment = true;
+      i++;
+      continue;
+    }
     if (ch === "{" || ch === "[") {
-      const end = findBalancedEnd(text, i);
-      if (end !== null) {
-        out.push(text.slice(i, end + 1));
-        i = end + 1;
+      stack.push({ start: i, expected: ch === "{" ? "}" : "]" });
+      continue;
+    }
+    if (ch === "}" || ch === "]") {
+      const matchingIndex = findExpectedFrameIndex(stack, ch);
+      if (matchingIndex === -1) {
+        stack.length = 0;
+        inString = false;
+        escaped = false;
+        lineComment = false;
+        blockComment = false;
         continue;
       }
+      const span = stack[matchingIndex];
+      if (span !== undefined) spans.push({ start: span.start, end: i });
+      stack.length = matchingIndex;
+      if (stack.length === 0) {
+        inString = false;
+        escaped = false;
+        lineComment = false;
+        blockComment = false;
+      }
     }
-    i++;
   }
-  return out;
+  return outermostSpans(spans).map((span) => text.slice(span.start, span.end + 1));
 }
 
 function findBalancedEnd(text: string, start: number): number | null {
   const open = text[start];
   if (open !== "{" && open !== "[") return null;
-  const close = open === "{" ? "}" : "]";
-  let depth = 0;
+  const stack: ("}" | "]")[] = [open === "{" ? "}" : "]"];
   let inString = false;
   let escaped = false;
-  for (let i = start; i < text.length; i++) {
+  let lineComment = false;
+  let blockComment = false;
+  for (let i = start + 1; i < text.length; i++) {
     const ch = text[i];
+    if (ch === undefined) break;
     if (escaped) {
       escaped = false;
+      continue;
+    }
+    if (lineComment) {
+      if (ch === "\n" || ch === "\r") lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      if (ch === "*" && text[i + 1] === "/") {
+        blockComment = false;
+        i++;
+      }
       continue;
     }
     // Backslash is only an escape character inside JSON strings; outside, it's
@@ -380,13 +502,55 @@ function findBalancedEnd(text: string, start: number): number | null {
       continue;
     }
     if (inString) continue;
-    if (ch === open) depth++;
-    else if (ch === close) {
-      depth--;
-      if (depth === 0) return i;
+    if (ch === "/" && text[i + 1] === "/") {
+      lineComment = true;
+      i++;
+      continue;
+    }
+    if (ch === "/" && text[i + 1] === "*") {
+      blockComment = true;
+      i++;
+      continue;
+    }
+    if (ch === "{" || ch === "[") {
+      stack.push(ch === "{" ? "}" : "]");
+    } else if (ch === "}" || ch === "]") {
+      const matchingIndex = findExpectedIndex(stack, ch);
+      if (matchingIndex === -1) continue;
+      stack.length = matchingIndex;
+      if (stack.length === 0) return i;
     }
   }
   return null;
+}
+
+function findExpectedFrameIndex(
+  stack: readonly { expected: "}" | "]" }[],
+  close: "}" | "]",
+): number {
+  for (let i = stack.length - 1; i >= 0; i--) {
+    if (stack[i]?.expected === close) return i;
+  }
+  return -1;
+}
+
+function findExpectedIndex(stack: readonly ("}" | "]")[], close: "}" | "]"): number {
+  for (let i = stack.length - 1; i >= 0; i--) {
+    if (stack[i] === close) return i;
+  }
+  return -1;
+}
+
+function outermostSpans(spans: { start: number; end: number }[]): { start: number; end: number }[] {
+  const out: { start: number; end: number }[] = [];
+  for (const span of spans.sort((a, b) => a.start - b.start || b.end - a.end)) {
+    const previous = out.at(-1);
+    if (previous !== undefined && previous.start <= span.start && span.end <= previous.end) {
+      continue;
+    }
+    out.push(span);
+  }
+  return out;
 }
 
 function isStructured(value: unknown): boolean {
