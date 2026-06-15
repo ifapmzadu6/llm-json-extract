@@ -71,6 +71,31 @@ describe("extractJsonString", () => {
     expect(out).toBe("[1,2]");
   });
 
+  it("extracts inline ```json fence", () => {
+    const out = extractJsonString('```json {"a":1} ```');
+    expect(out).toBe('{"a":1}');
+  });
+
+  it("extracts inline bare ``` fence", () => {
+    const out = extractJsonString("``` [1,2] ```");
+    expect(out).toBe("[1,2]");
+  });
+
+  it("prefers inline ```json fence over inline bare ``` fence", () => {
+    const out = extractJsonString('```json {"a":1} ``` ``` [2,3] ```');
+    expect(out).toBe('{"a":1}');
+  });
+
+  it("extracts inline ```json fence with extra whitespace", () => {
+    const out = extractJsonString('```json   {"a":1}   ```');
+    expect(out).toBe('{"a":1}');
+  });
+
+  it("falls back to bare JSON when fence has no separator after language tag", () => {
+    const out = extractJsonString('```json{"a":1}```');
+    expect(out).toBe('{"a":1}');
+  });
+
   it("falls back to bare JSON object", () => {
     const out = extractJsonString('Here you go: {"a":1,"b":2} done.');
     expect(out).toBe('{"a":1,"b":2}');
