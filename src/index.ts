@@ -390,13 +390,14 @@ function findAllCodeFences(text: string): string[] {
   const labeled: { body: string; start: number }[] = [];
   const bare: { body: string; start: number }[] = [];
   // Labeled ```json fences (case-insensitive) take priority.
-  for (const m of text.matchAll(/```json[ \t]*\r?\n([\s\S]*?)```/gi)) {
+  // Support both standard newline form and inline space-separated form.
+  for (const m of text.matchAll(/```json(?:[ \t]*\r?\n|[ \t]+)([\s\S]*?)```/gi)) {
     if (m[1] !== undefined && m.index !== undefined) {
       labeled.push({ body: m[1], start: m.index });
     }
   }
   // Bare ``` fences that don't have a language tag.
-  for (const m of text.matchAll(/```[ \t]*\r?\n([\s\S]*?)```/g)) {
+  for (const m of text.matchAll(/```(?:[ \t]*\r?\n|[ \t]+)([\s\S]*?)```/g)) {
     if (m[1] !== undefined && m.index !== undefined) {
       bare.push({ body: m[1], start: m.index });
     }
