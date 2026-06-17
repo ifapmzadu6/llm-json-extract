@@ -304,11 +304,12 @@ function findAllTagMatches(text: string, tags: readonly string[]): TagMatch[] {
   for (const tag of tags) {
     const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const openRe = new RegExp(`<${escaped}(?:\\s[^>]*)?>`, "gi");
+    const closeRe = new RegExp(`</${escaped}>`, "gi");
     let m = openRe.exec(text);
     while (m !== null) {
       const start = m.index;
       const bodyStart = start + m[0].length;
-      const close = findTagClose(text, tag, bodyStart);
+      const close = findTagClose(text, closeRe, bodyStart);
       if (close === null) {
         openRe.lastIndex = bodyStart;
         m = openRe.exec(text);
@@ -328,7 +329,7 @@ function findAllTagMatches(text: string, tags: readonly string[]): TagMatch[] {
 
 function findTagClose(
   text: string,
-  tag: string,
+  closeRe: RegExp,
   bodyStart: number,
 ): { start: number; end: number } | null {
   const jsonStart = skipWhitespace(text, bodyStart);
@@ -336,25 +337,23 @@ function findTagClose(
   if (first === "{" || first === "[") {
     const jsonEnd = findBalancedEnd(text, jsonStart);
     if (jsonEnd !== null) {
-      return findClosingTag(text, tag, jsonEnd + 1);
+      return findClosingTag(text, closeRe, jsonEnd + 1);
     }
   }
   if (first === '"') {
     const stringEnd = findJsonStringEnd(text, jsonStart);
     if (stringEnd !== null) {
-      return findClosingTag(text, tag, stringEnd + 1);
+      return findClosingTag(text, closeRe, stringEnd + 1);
     }
   }
-  return findClosingTag(text, tag, bodyStart);
+  return findClosingTag(text, closeRe, bodyStart);
 }
 
 function findClosingTag(
   text: string,
-  tag: string,
+  closeRe: RegExp,
   startFrom: number,
 ): { start: number; end: number } | null {
-  const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const closeRe = new RegExp(`</${escaped}>`, "gi");
   closeRe.lastIndex = startFrom;
   const m = closeRe.exec(text);
   if (m === null) return null;
