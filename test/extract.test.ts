@@ -314,6 +314,24 @@ describe("fallthrough across candidates", () => {
       expect((e as LlmJsonExtractError).stage).toBe("validate");
     }
   });
+
+  it("reports the structured candidate's error over a later primitive's", () => {
+    // Preferred (last) <result> body is bare prose that jsonrepair turns into
+    // a string primitive; the earlier <result> is the real structured answer
+    // but fails the schema. The reported error should point at the structured
+    // candidate, not the stray prose.
+    const Schema = z.object({ ok: z.literal(true) });
+    const text = `<result>{"ok": false}</result>\n<result>nope</result>`;
+    try {
+      extractJsonWith(text, Schema.parse);
+      expect.fail("should throw");
+    } catch (e) {
+      const err = e as LlmJsonExtractError;
+      expect(err).toBeInstanceOf(LlmJsonExtractError);
+      expect(err.stage).toBe("validate");
+      expect(err.extracted).toBe('{"ok": false}');
+    }
+  });
 });
 
 describe("edge cases", () => {

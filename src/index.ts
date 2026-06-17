@@ -251,6 +251,13 @@ export function extractJsonWith<T>(
   let lastError: unknown;
   let lastCandidate: string | null = null;
   let lastStage: "parse" | "validate" = "parse";
+  // The first structured candidate is the most likely "real answer"; remember
+  // its failure so we can surface it even if a later primitive candidate also
+  // fails validation. Without this, the primitives loop would overwrite the
+  // structured failure with a less informative stray-prose error.
+  let structuredError:
+    | { stage: "parse" | "validate"; error: unknown; extracted: string }
+    | undefined;
   const primitives: { value: unknown; extracted: string }[] = [];
   for (const candidate of candidates) {
     lastCandidate = candidate;
@@ -258,6 +265,9 @@ export function extractJsonWith<T>(
     if (!parsed.ok) {
       lastStage = "parse";
       lastError = parsed.error;
+      if (structuredError === undefined) {
+        structuredError = { stage: "parse", error: parsed.error, extracted: candidate };
+      }
       continue;
     }
     if (!isStructured(parsed.value)) {
@@ -269,6 +279,9 @@ export function extractJsonWith<T>(
     } catch (err) {
       lastStage = "validate";
       lastError = err;
+      if (structuredError === undefined) {
+        structuredError = { stage: "validate", error: err, extracted: candidate };
+      }
     }
   }
   for (const p of primitives) {
@@ -279,6 +292,11 @@ export function extractJsonWith<T>(
       lastStage = "validate";
       lastError = err;
     }
+  }
+  if (structuredError !== undefined) {
+    lastStage = structuredError.stage;
+    lastError = structuredError.error;
+    lastCandidate = structuredError.extracted;
   }
   throw new LlmJsonExtractError({
     message: `${lastStage === "parse" ? "JSON.parse" : "Validation"} failed for all candidates: ${
