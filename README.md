@@ -186,20 +186,21 @@ Useful when you want to score, log, or pick candidates yourself. `extractJson` a
 
 ## CLI example
 
-Pipe Claude Code CLI output directly:
+Pipe Claude Code CLI output directly (`llm-json-extract` must be installed in the current directory's `node_modules`):
 
 ```bash
 claude -p 'List 3 fruits. Reply as <result>{"items":[...]}</result>.' \
   --output-format json \
   | jq -r .result \
-  | node -e '
-      import("llm-json-extract").then(({ extractJson }) => {
-        let buf=""; process.stdin.on("data",d=>buf+=d).on("end",()=>{
-          console.log(extractJson(buf));
-        });
-      });
+  | node --input-type=module -e '
+      import { extractJson } from "llm-json-extract";
+      let buf = "";
+      process.stdin.on("data", (d) => (buf += d));
+      process.stdin.on("end", () => console.log(extractJson(buf)));
     '
 ```
+
+`--input-type=module` makes the `-e` body ESM, so a static `import` works without nesting a dynamic `import()` inside `.then(...)`.
 
 Or in a Node script that calls `codex exec` / `claude -p`:
 
