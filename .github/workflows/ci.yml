@@ -28,6 +28,10 @@ jobs:
       - run: npm run test:smoke
 
   minimum-node-runtime:
+    # Node 18 is declared in `engines.node` but is end-of-life. We don't run
+    # the full lint/typecheck/test suite on it — only the runtime smoke test
+    # against the published tarball (ESM + CJS) to confirm the package keeps
+    # loading and running on 18.18+. The full matrix above covers 20/22/24/26.
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
