@@ -497,8 +497,8 @@ function stepScan(
 function findAllBareJson(text: string): string[] {
   const spans: { start: number; end: number }[] = [];
   const stack: StackFrame[] = [];
-  let lastBraceIndex = -1;
-  let lastBracketIndex = -1;
+  let lastBraceFrameIndex = -1;
+  let lastBracketFrameIndex = -1;
   const scan = resetScanState();
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
@@ -506,11 +506,11 @@ function findAllBareJson(text: string): string[] {
     if (stack.length === 0) {
       if (ch === "{" || ch === "[") {
         const state = pushStackFrame(stack, i, ch === "{" ? "}" : "]", {
-          lastBraceIndex,
-          lastBracketIndex,
+          lastBraceFrameIndex,
+          lastBracketFrameIndex,
         });
-        lastBraceIndex = state.lastBraceIndex;
-        lastBracketIndex = state.lastBracketIndex;
+        lastBraceFrameIndex = state.lastBraceFrameIndex;
+        lastBracketFrameIndex = state.lastBracketFrameIndex;
         Object.assign(scan, resetScanState());
       }
       continue;
@@ -522,27 +522,27 @@ function findAllBareJson(text: string): string[] {
 
     if (ch === "{" || ch === "[") {
       const state = pushStackFrame(stack, i, ch === "{" ? "}" : "]", {
-        lastBraceIndex,
-        lastBracketIndex,
+        lastBraceFrameIndex,
+        lastBracketFrameIndex,
       });
-      lastBraceIndex = state.lastBraceIndex;
-      lastBracketIndex = state.lastBracketIndex;
+      lastBraceFrameIndex = state.lastBraceFrameIndex;
+      lastBracketFrameIndex = state.lastBracketFrameIndex;
       continue;
     }
     if (ch === "}" || ch === "]") {
-      const matchingIndex = ch === "}" ? lastBraceIndex : lastBracketIndex;
+      const matchingIndex = ch === "}" ? lastBraceFrameIndex : lastBracketFrameIndex;
       if (matchingIndex === -1) {
         stack.length = 0;
-        lastBraceIndex = -1;
-        lastBracketIndex = -1;
+        lastBraceFrameIndex = -1;
+        lastBracketFrameIndex = -1;
         Object.assign(scan, resetScanState());
         continue;
       }
       const span = stack[matchingIndex];
       if (span !== undefined) spans.push({ start: span.start, end: i });
       stack.length = matchingIndex;
-      lastBraceIndex = span?.prevBraceIndex ?? -1;
-      lastBracketIndex = span?.prevBracketIndex ?? -1;
+      lastBraceFrameIndex = span?.prevBraceFrameIndex ?? -1;
+      lastBracketFrameIndex = span?.prevBracketFrameIndex ?? -1;
       if (stack.length === 0) {
         Object.assign(scan, resetScanState());
       }
@@ -555,14 +555,14 @@ function findBalancedEnd(text: string, start: number): number | null {
   const open = text[start];
   if (open !== "{" && open !== "[") return null;
   const stack: StackFrame[] = [];
-  let lastBraceIndex = -1;
-  let lastBracketIndex = -1;
+  let lastBraceFrameIndex = -1;
+  let lastBracketFrameIndex = -1;
   let state = pushStackFrame(stack, start, open === "{" ? "}" : "]", {
-    lastBraceIndex,
-    lastBracketIndex,
+    lastBraceFrameIndex,
+    lastBracketFrameIndex,
   });
-  lastBraceIndex = state.lastBraceIndex;
-  lastBracketIndex = state.lastBracketIndex;
+  lastBraceFrameIndex = state.lastBraceFrameIndex;
+  lastBracketFrameIndex = state.lastBracketFrameIndex;
   const scan = resetScanState();
   for (let i = start + 1; i < text.length; i++) {
     const ch = text[i];
@@ -573,18 +573,18 @@ function findBalancedEnd(text: string, start: number): number | null {
 
     if (ch === "{" || ch === "[") {
       state = pushStackFrame(stack, i, ch === "{" ? "}" : "]", {
-        lastBraceIndex,
-        lastBracketIndex,
+        lastBraceFrameIndex,
+        lastBracketFrameIndex,
       });
-      lastBraceIndex = state.lastBraceIndex;
-      lastBracketIndex = state.lastBracketIndex;
+      lastBraceFrameIndex = state.lastBraceFrameIndex;
+      lastBracketFrameIndex = state.lastBracketFrameIndex;
     } else if (ch === "}" || ch === "]") {
-      const matchingIndex = ch === "}" ? lastBraceIndex : lastBracketIndex;
+      const matchingIndex = ch === "}" ? lastBraceFrameIndex : lastBracketFrameIndex;
       if (matchingIndex === -1) continue;
       const frame = stack[matchingIndex];
       stack.length = matchingIndex;
-      lastBraceIndex = frame?.prevBraceIndex ?? -1;
-      lastBracketIndex = frame?.prevBracketIndex ?? -1;
+      lastBraceFrameIndex = frame?.prevBraceFrameIndex ?? -1;
+      lastBracketFrameIndex = frame?.prevBracketFrameIndex ?? -1;
       if (stack.length === 0) return i;
     }
   }
@@ -593,26 +593,26 @@ function findBalancedEnd(text: string, start: number): number | null {
 
 interface StackFrame {
   start: number;
-  prevBraceIndex: number;
-  prevBracketIndex: number;
+  prevBraceFrameIndex: number;
+  prevBracketFrameIndex: number;
 }
 
 function pushStackFrame(
   stack: StackFrame[],
   start: number,
   expected: "}" | "]",
-  state: { lastBraceIndex: number; lastBracketIndex: number },
-): { lastBraceIndex: number; lastBracketIndex: number } {
+  state: { lastBraceFrameIndex: number; lastBracketFrameIndex: number },
+): { lastBraceFrameIndex: number; lastBracketFrameIndex: number } {
   const nextIndex = stack.length;
   stack.push({
     start,
-    prevBraceIndex: state.lastBraceIndex,
-    prevBracketIndex: state.lastBracketIndex,
+    prevBraceFrameIndex: state.lastBraceFrameIndex,
+    prevBracketFrameIndex: state.lastBracketFrameIndex,
   });
   if (expected === "}") {
-    return { lastBraceIndex: nextIndex, lastBracketIndex: state.lastBracketIndex };
+    return { lastBraceFrameIndex: nextIndex, lastBracketFrameIndex: state.lastBracketFrameIndex };
   }
-  return { lastBraceIndex: state.lastBraceIndex, lastBracketIndex: nextIndex };
+  return { lastBraceFrameIndex: state.lastBraceFrameIndex, lastBracketFrameIndex: nextIndex };
 }
 
 function outermostSpans(spans: { start: number; end: number }[]): { start: number; end: number }[] {
