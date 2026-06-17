@@ -71,6 +71,10 @@ pnpm add llm-json-extract
 yarn add llm-json-extract
 ```
 
+### Node support
+
+`engines.node` is `>=18`. The full test matrix runs on Node **20, 22, 24, 26**. Node **18** is covered by a runtime-only smoke test against the published tarball (ESM + CJS), not the full suite — Node 18 is end-of-life, so prefer Node 20+ when you can. The package has no Node version-specific code and installs cleanly on 18.18+.
+
 ## Usage
 
 ### Prompt the model
