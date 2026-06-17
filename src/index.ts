@@ -424,15 +424,82 @@ function findAllCodeFences(text: string): string[] {
   return [...labeled.map((x) => x.body), ...bare.map((x) => x.body)];
 }
 
+interface ScanState {
+  inString: boolean;
+  escaped: boolean;
+  lineComment: boolean;
+  blockComment: boolean;
+}
+
+function resetScanState(): ScanState {
+  return { inString: false, escaped: false, lineComment: false, blockComment: false };
+}
+
+/**
+ * Advance the shared string/escape/comment state machine by one character.
+ * Used by both `findAllBareJson` and `findBalancedEnd` to decide whether a
+ * character is consumed by string/escape/comment bookkeeping (and must be
+ * ignored by brace tracking).
+ *
+ * Returns:
+ *   consumed  — true if the char was handled here; brace logic must skip it.
+ *   skipNext  — true if a two-char token (`//`, `/*`, `*\/`) also swallowed the
+ *               following character; the caller should bump `i` once more.
+ */
+function stepScan(
+  state: ScanState,
+  ch: string,
+  nextCh: string | undefined,
+): {
+  consumed: boolean;
+  skipNext: boolean;
+} {
+  if (state.escaped) {
+    state.escaped = false;
+    return { consumed: true, skipNext: false };
+  }
+  if (state.lineComment) {
+    if (ch === "\n" || ch === "\r") state.lineComment = false;
+    return { consumed: true, skipNext: false };
+  }
+  if (state.blockComment) {
+    if (ch === "*" && nextCh === "/") {
+      state.blockComment = false;
+      return { consumed: true, skipNext: true };
+    }
+    return { consumed: true, skipNext: false };
+  }
+  // Backslash is only an escape character inside JSON strings; outside, it's
+  // just literal text. Treating it as escape unconditionally would skip the
+  // next character in surrounding prose and could miscount brace balance.
+  if (ch === "\\" && state.inString) {
+    state.escaped = true;
+    return { consumed: true, skipNext: false };
+  }
+  if (ch === '"') {
+    state.inString = !state.inString;
+    return { consumed: true, skipNext: false };
+  }
+  if (state.inString) {
+    return { consumed: true, skipNext: false };
+  }
+  if (ch === "/" && nextCh === "/") {
+    state.lineComment = true;
+    return { consumed: true, skipNext: true };
+  }
+  if (ch === "/" && nextCh === "*") {
+    state.blockComment = true;
+    return { consumed: true, skipNext: true };
+  }
+  return { consumed: false, skipNext: false };
+}
+
 function findAllBareJson(text: string): string[] {
   const spans: { start: number; end: number }[] = [];
   const stack: StackFrame[] = [];
   let lastBraceIndex = -1;
   let lastBracketIndex = -1;
-  let inString = false;
-  let escaped = false;
-  let lineComment = false;
-  let blockComment = false;
+  const scan = resetScanState();
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
     if (ch === undefined) break;
@@ -444,48 +511,15 @@ function findAllBareJson(text: string): string[] {
         });
         lastBraceIndex = state.lastBraceIndex;
         lastBracketIndex = state.lastBracketIndex;
-        inString = false;
-        escaped = false;
-        lineComment = false;
-        blockComment = false;
+        Object.assign(scan, resetScanState());
       }
       continue;
     }
 
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (lineComment) {
-      if (ch === "\n" || ch === "\r") lineComment = false;
-      continue;
-    }
-    if (blockComment) {
-      if (ch === "*" && text[i + 1] === "/") {
-        blockComment = false;
-        i++;
-      }
-      continue;
-    }
-    if (ch === "\\" && inString) {
-      escaped = true;
-      continue;
-    }
-    if (ch === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) continue;
-    if (ch === "/" && text[i + 1] === "/") {
-      lineComment = true;
-      i++;
-      continue;
-    }
-    if (ch === "/" && text[i + 1] === "*") {
-      blockComment = true;
-      i++;
-      continue;
-    }
+    const r = stepScan(scan, ch, text[i + 1]);
+    if (r.skipNext) i++;
+    if (r.consumed) continue;
+
     if (ch === "{" || ch === "[") {
       const state = pushStackFrame(stack, i, ch === "{" ? "}" : "]", {
         lastBraceIndex,
@@ -501,10 +535,7 @@ function findAllBareJson(text: string): string[] {
         stack.length = 0;
         lastBraceIndex = -1;
         lastBracketIndex = -1;
-        inString = false;
-        escaped = false;
-        lineComment = false;
-        blockComment = false;
+        Object.assign(scan, resetScanState());
         continue;
       }
       const span = stack[matchingIndex];
@@ -513,10 +544,7 @@ function findAllBareJson(text: string): string[] {
       lastBraceIndex = span?.prevBraceIndex ?? -1;
       lastBracketIndex = span?.prevBracketIndex ?? -1;
       if (stack.length === 0) {
-        inString = false;
-        escaped = false;
-        lineComment = false;
-        blockComment = false;
+        Object.assign(scan, resetScanState());
       }
     }
   }
@@ -535,50 +563,14 @@ function findBalancedEnd(text: string, start: number): number | null {
   });
   lastBraceIndex = state.lastBraceIndex;
   lastBracketIndex = state.lastBracketIndex;
-  let inString = false;
-  let escaped = false;
-  let lineComment = false;
-  let blockComment = false;
+  const scan = resetScanState();
   for (let i = start + 1; i < text.length; i++) {
     const ch = text[i];
     if (ch === undefined) break;
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (lineComment) {
-      if (ch === "\n" || ch === "\r") lineComment = false;
-      continue;
-    }
-    if (blockComment) {
-      if (ch === "*" && text[i + 1] === "/") {
-        blockComment = false;
-        i++;
-      }
-      continue;
-    }
-    // Backslash is only an escape character inside JSON strings; outside, it's
-    // just literal text. Treating it as escape unconditionally would skip the
-    // next character in surrounding prose and could miscount brace balance.
-    if (ch === "\\" && inString) {
-      escaped = true;
-      continue;
-    }
-    if (ch === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) continue;
-    if (ch === "/" && text[i + 1] === "/") {
-      lineComment = true;
-      i++;
-      continue;
-    }
-    if (ch === "/" && text[i + 1] === "*") {
-      blockComment = true;
-      i++;
-      continue;
-    }
+    const r = stepScan(scan, ch, text[i + 1]);
+    if (r.skipNext) i++;
+    if (r.consumed) continue;
+
     if (ch === "{" || ch === "[") {
       state = pushStackFrame(stack, i, ch === "{" ? "}" : "]", {
         lastBraceIndex,
