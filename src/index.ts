@@ -403,25 +403,35 @@ function findJsonStringEnd(text: string, start: number): number | null {
   return null;
 }
 
+// Block form: the language tag (if any) is followed by a newline and the
+// closing ``` sits on its own line (optionally indented). Requiring the close
+// to be at a line boundary — rather than the first ``` anywhere — means triple
+// backticks embedded inside the body (e.g. inside a JSON string value) don't
+// prematurely terminate the fence.
+const LABELED_BLOCK_FENCE = /```json[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*```/gi;
+const BARE_BLOCK_FENCE = /```[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*```/g;
+// Inline form: language tag and body share a single line, closed by the first
+// ``` on that line.
+const LABELED_INLINE_FENCE = /```json[ \t]+([^\n]*?)```/gi;
+const BARE_INLINE_FENCE = /```[ \t]+([^\n]*?)```/g;
+
+function collectFences(text: string, ...patterns: RegExp[]): string[] {
+  const found: { body: string; start: number }[] = [];
+  for (const pattern of patterns) {
+    for (const m of text.matchAll(pattern)) {
+      if (m[1] !== undefined && m.index !== undefined) {
+        found.push({ body: m[1], start: m.index });
+      }
+    }
+  }
+  return found.sort((a, b) => a.start - b.start).map((x) => x.body);
+}
+
 function findAllCodeFences(text: string): string[] {
-  const labeled: { body: string; start: number }[] = [];
-  const bare: { body: string; start: number }[] = [];
-  // Labeled ```json fences (case-insensitive) take priority.
-  // Support both standard newline form and inline space-separated form.
-  for (const m of text.matchAll(/```json(?:[ \t]*\r?\n|[ \t]+)([\s\S]*?)```/gi)) {
-    if (m[1] !== undefined && m.index !== undefined) {
-      labeled.push({ body: m[1], start: m.index });
-    }
-  }
-  // Bare ``` fences that don't have a language tag.
-  for (const m of text.matchAll(/```(?:[ \t]*\r?\n|[ \t]+)([\s\S]*?)```/g)) {
-    if (m[1] !== undefined && m.index !== undefined) {
-      bare.push({ body: m[1], start: m.index });
-    }
-  }
-  labeled.sort((a, b) => a.start - b.start);
-  bare.sort((a, b) => a.start - b.start);
-  return [...labeled.map((x) => x.body), ...bare.map((x) => x.body)];
+  // Labeled ```json fences (case-insensitive) take priority over bare ones.
+  const labeled = collectFences(text, LABELED_BLOCK_FENCE, LABELED_INLINE_FENCE);
+  const bare = collectFences(text, BARE_BLOCK_FENCE, BARE_INLINE_FENCE);
+  return [...labeled, ...bare];
 }
 
 interface ScanState {

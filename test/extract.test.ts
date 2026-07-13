@@ -96,6 +96,21 @@ describe("extractJsonString", () => {
     expect(out).toBe('{"a":1}');
   });
 
+  it("does not close a block ```json fence on triple backticks inside a string", () => {
+    const out = extractJson('```json\n{"code": "```py"}\n```');
+    expect(out).toEqual({ code: "```py" });
+  });
+
+  it("does not close a block bare ``` fence on triple backticks inside a string", () => {
+    const out = extractJson('```\n{"code": "```py"}\n```');
+    expect(out).toEqual({ code: "```py" });
+  });
+
+  it("ignores mid-line triple backticks when closing a block fence", () => {
+    const out = extractJsonString('```json\n{"a":1}\n```\ntrailing ``` noise');
+    expect(out).toBe('{"a":1}');
+  });
+
   it("falls back to bare JSON object", () => {
     const out = extractJsonString('Here you go: {"a":1,"b":2} done.');
     expect(out).toBe('{"a":1,"b":2}');
