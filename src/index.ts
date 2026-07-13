@@ -411,9 +411,16 @@ function findJsonStringEnd(text: string, start: number): number | null {
 const LABELED_BLOCK_FENCE = /```json[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*```/gi;
 const BARE_BLOCK_FENCE = /```[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*```/g;
 // Inline form: language tag and body share a single line, closed by the first
-// ``` on that line.
-const LABELED_INLINE_FENCE = /```json[ \t]+([^\n]*?)```/gi;
-const BARE_INLINE_FENCE = /```[ \t]+([^\n]*?)```/g;
+// ``` on that line. A single `[ \t]` separator (not `[ \t]+`) is required
+// before the body: pairing a `[ \t]+` run with the lazy `[^\n]*?` body — whose
+// character class also matches spaces/tabs — lets the two quantifiers split a
+// long whitespace run in O(n) ways per start position, so an unterminated fence
+// with many spaces triggers polynomial backtracking (ReDoS). With one fixed
+// separator char only a single unbounded quantifier remains, keeping matching
+// linear. Any extra leading whitespace is folded into the body capture and
+// stripped by the caller's trim(), so accepted inputs are unchanged.
+const LABELED_INLINE_FENCE = /```json[ \t]([^\n]*?)```/gi;
+const BARE_INLINE_FENCE = /```[ \t]([^\n]*?)```/g;
 
 function collectFences(text: string, ...patterns: RegExp[]): string[] {
   const found: { body: string; start: number }[] = [];
