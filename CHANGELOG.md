@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Removed a polynomial-time backtracking (ReDoS) hazard in the inline code-fence
+  patterns. The ` ```json ... ``` ` / ` ``` ... ``` ` regexes paired a `[ \t]+`
+  separator with a lazy `[^\n]*?` body whose character class also matches spaces
+  and tabs; an unterminated fence containing a long run of whitespace could make
+  the two quantifiers backtrack quadratically. They now require a single fixed
+  separator character, keeping matching linear. Accepted inputs are unchanged.
+
 ## [1.0.0] - 2026-07-13
 
 First stable release. The public API (`extractJson`, `extractJsonString`,

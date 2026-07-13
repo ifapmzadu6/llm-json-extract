@@ -96,6 +96,16 @@ describe("extractJsonString", () => {
     expect(out).toBe('{"a":1}');
   });
 
+  it("returns quickly on an unterminated inline fence with a long whitespace run (no ReDoS)", () => {
+    // A `[ \t]+` separator paired with the lazy `[^\n]*?` body used to backtrack
+    // polynomially on unterminated fences. This adversarial input must stay linear.
+    const evil = `\`\`\`json${" ".repeat(200_000)}x`;
+    const start = performance.now();
+    const out = extractJsonString(evil);
+    expect(performance.now() - start).toBeLessThan(1000);
+    expect(out).toBeNull();
+  });
+
   it("does not close a block ```json fence on triple backticks inside a string", () => {
     const out = extractJson('```json\n{"code": "```py"}\n```');
     expect(out).toEqual({ code: "```py" });
