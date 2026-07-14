@@ -1,4 +1,6 @@
-# llm-json-extract
+<div align="center">
+
+<img src="https://raw.githubusercontent.com/ifapmzadu6/llm-json-extract/main/.github/assets/banner.svg" alt="llm-json-extract — extract clean, validated JSON from messy LLM output" width="820">
 
 **Get clean, validated JSON out of any LLM response — even when the model rambles.**
 
@@ -8,6 +10,8 @@
 [![bundle size](https://img.shields.io/bundlejs/size/llm-json-extract?label=min%2Bgzip)](https://bundlejs.com/?q=llm-json-extract)
 [![types](https://img.shields.io/npm/types/llm-json-extract.svg)](https://www.npmjs.com/package/llm-json-extract)
 [![license](https://img.shields.io/npm/l/llm-json-extract.svg)](./LICENSE)
+
+</div>
 
 You ask a model for JSON. It gives you *this*:
 
