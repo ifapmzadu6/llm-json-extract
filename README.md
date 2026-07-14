@@ -1,6 +1,14 @@
-<div align="center">
+```text
+  _ _                 _                                 _                  _
+ | | |_ __ ___       (_)___  ___  _ __         _____  _| |_ _ __ __ _  ___| |_
+ | | | '_ ` _ \ _____| / __|/ _ \| '_ \ _____ / _ \ \/ / __| '__/ _` |/ __| __|
+ | | | | | | | |_____| \__ \ (_) | | | |_____|  __/>  <| |_| | | (_| | (__| |_
+ |_|_|_| |_| |_|    _/ |___/\___/|_| |_|      \___/_/\_\\__|_|  \__,_|\___|\__|
+                   |__/
+       reasoning · prose · almost-JSON  ──▶  { clean, typed JSON }  ✓
+```
 
-<img src="https://raw.githubusercontent.com/ifapmzadu6/llm-json-extract/main/.github/assets/banner.svg" alt="llm-json-extract — extract clean, validated JSON from messy LLM output" width="820">
+<div align="center">
 
 **Get clean, validated JSON out of any LLM response — even when the model rambles.**
 
