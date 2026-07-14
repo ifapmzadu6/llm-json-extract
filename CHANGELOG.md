@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] - 2026-07-14
 
 ### Added
 
@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and tabs; an unterminated fence containing a long run of whitespace could make
   the two quantifiers backtrack quadratically. They now require a single fixed
   separator character, keeping matching linear. Accepted inputs are unchanged.
+- The `bin` entry in `package.json` no longer uses a `./` path prefix. Newer
+  npm versions treat the prefixed path as invalid and silently drop the bin
+  entry at publish time, which would have shipped the package without the
+  `llm-json-extract` executable.
 
 ## [1.0.0] - 2026-07-13
 
@@ -165,6 +169,7 @@ First stable release. The public API (`extractJson`, `extractJsonString`,
 
 Initial release.
 
+[1.1.0]: https://github.com/ifapmzadu6/llm-json-extract/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/ifapmzadu6/llm-json-extract/compare/v0.6.1...v1.0.0
 [0.6.1]: https://github.com/ifapmzadu6/llm-json-extract/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/ifapmzadu6/llm-json-extract/compare/v0.5.2...v0.6.0
