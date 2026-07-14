@@ -6,6 +6,7 @@
     "llm",
     "json",
     "extract",
+    "cli",
     "parse",
     "claude",
     "anthropic",
@@ -29,6 +30,9 @@
   },
   "homepage": "https://github.com/ifapmzadu6/llm-json-extract#readme",
   "type": "module",
+  "bin": {
+    "llm-json-extract": "./dist/cli.js"
+  },
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",

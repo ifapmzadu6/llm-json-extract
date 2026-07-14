@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -61,6 +62,27 @@ try {
 
   run(process.execPath, [join(consumerDir, "esm.mjs")], { cwd: tempDir });
   run(process.execPath, [join(consumerDir, "cjs.cjs")], { cwd: tempDir });
+
+  // CLI: run the installed bin script end-to-end, piping messy output through stdin.
+  const cliScript = join(tempDir, "node_modules", name, "dist", "cli.js");
+  const messy = `prose before <result>{"items": ['apple', 'banana'], "count": 2,}</result> after`;
+  const cliResult = spawnSync(process.execPath, [cliScript], {
+    cwd: tempDir,
+    input: messy,
+    encoding: "utf8",
+  });
+  if (cliResult.error !== undefined) throw cliResult.error;
+  assert.equal(cliResult.status, 0, `CLI exited ${cliResult.status}: ${cliResult.stderr}`);
+  assert.deepEqual(JSON.parse(cliResult.stdout), expected);
+
+  const cliFailure = spawnSync(process.execPath, [cliScript], {
+    cwd: tempDir,
+    input: "no json here",
+    encoding: "utf8",
+  });
+  if (cliFailure.error !== undefined) throw cliFailure.error;
+  assert.equal(cliFailure.status, 1, `CLI exited ${cliFailure.status}, expected 1`);
+  assert.match(cliFailure.stderr, /stage: extract/);
 } finally {
   rmSync(tempDir, { recursive: true, force: true });
 }
