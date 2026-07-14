@@ -1,6 +1,6 @@
 {
   "name": "llm-json-extract",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Extract & validate JSON from messy LLM output. Designed for Claude / Codex CLI workflows where tool-use is unavailable. XML-tag aware, with multi-stage fallbacks and jsonrepair.",
   "keywords": [
     "llm",
@@ -31,7 +31,7 @@
   "homepage": "https://github.com/ifapmzadu6/llm-json-extract#readme",
   "type": "module",
   "bin": {
-    "llm-json-extract": "./dist/cli.js"
+    "llm-json-extract": "dist/cli.js"
   },
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
