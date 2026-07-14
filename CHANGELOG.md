@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `llm-json-extract` CLI (`npx llm-json-extract`). Reads LLM output from stdin
+  or a file and prints the extracted JSON to stdout, exposing the same
+  extraction pipeline as the library: `--tag` (repeatable), `--first`,
+  `--no-fence`, `--no-bare`, `--no-repair`, `--raw`, and `--pretty`. Exit codes:
+  `0` success, `1` nothing extracted/parsed, `2` usage error.
+
 ### Fixed
 
 - Removed a polynomial-time backtracking (ReDoS) hazard in the inline code-fence

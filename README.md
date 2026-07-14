@@ -61,6 +61,12 @@ const data = extractJsonWith(llmOutput, Schema);
 //    ^? { items: string[]; count: number }
 ```
 
+Or from the shell, with no glue code at all:
+
+```bash
+claude -p '...' --output-format json | jq -r .result | npx llm-json-extract
+```
+
 No prompt gymnastics. No `"Respond with ONLY JSON, nothing else!!"` begging.
 Let the model think out loud — this library finds the answer.
 
@@ -88,6 +94,7 @@ And there's a quality angle: forcing a model into JSON-only output often **hurts
 - 🎯 **Example-echo safe** — `pickLast` grabs the *final* `<result>` block, not the example the model copied from your prompt
 - 🩹 **Repairs almost-JSON** — trailing commas, single quotes, comments, unquoted keys, via `jsonrepair`
 - ✅ **Bring your own validator** — pass a zod schema directly, or any `(unknown) => T` function (valibot, arktype, hand-rolled)
+- 🖥️ **`npx llm-json-extract` CLI included** — pipe `claude -p` / `codex exec` output straight through, zero glue code
 - 🪶 **Tiny & dependable** — one dependency (`jsonrepair`), zero required peer deps, ESM + CJS, full TypeScript types, tree-shakeable
 - 🧯 **Typed errors** — `LlmJsonExtractError` tells you *which stage* failed (`extract` / `parse` / `validate`) and hands you the raw text for debugging
 
@@ -202,23 +209,33 @@ const jsonStr = extractJsonString(llmOutput);      // best candidate, unparsed
 const all = extractJsonCandidates(llmOutput);      // every candidate, ordered by preference
 ```
 
-## Recipes
+## CLI
 
-### Pipe from Claude Code CLI
+The package ships a command-line tool with the same extraction pipeline, so shell scripts get the same robustness as code — no glue required:
 
 ```bash
+# pipe from stdin
 claude -p 'List 3 fruits. Reply as <result>{"items":[...]}</result>.' \
-  --output-format json \
-  | jq -r .result \
-  | node --input-type=module -e '
-      import { extractJson } from "llm-json-extract";
-      let buf = "";
-      process.stdin.on("data", (d) => (buf += d));
-      process.stdin.on("end", () => console.log(JSON.stringify(extractJson(buf))));
-    '
+  --output-format json | jq -r .result | llm-json-extract
+
+# or read a file, pretty-printed
+llm-json-extract --pretty response.txt
 ```
 
-(`llm-json-extract` must be installed in the current directory's `node_modules`.)
+(Use `npx llm-json-extract` if it isn't installed globally or in the current project.)
+
+| Flag | Effect |
+| --- | --- |
+| `-t, --tag <name>` | Tag to scan for (repeatable; replaces the defaults `result`, `json`, `output`) |
+| `--first` | Prefer the first tag match instead of the last |
+| `--no-fence` / `--no-bare` / `--no-repair` | Disable individual fallback/repair stages |
+| `-r, --raw` | Print the extracted candidate as-is, without parsing or repairing |
+| `-p, --pretty` | Pretty-print the parsed JSON (2-space indent) |
+| `-h, --help` / `-V, --version` | Help / version |
+
+Exit codes: `0` success, `1` nothing extracted or parsed, `2` usage error — so `||` fallbacks and retry loops in shell scripts just work.
+
+## Recipes
 
 ### Wrap `codex exec` (or any CLI) in a typed function
 
@@ -364,7 +381,7 @@ Works fine — the bare-JSON fallback picks it up. Tags just make extraction una
 Yes: `extractJson(text, { tags: ["answer"] })`.
 
 **Does it handle streaming?**
-Buffer the stream first (see the CLI recipe) — extraction operates on complete text.
+Buffer the stream first — extraction operates on complete text. (The CLI already does this when you pipe into it.)
 
 **How big is it?**
 A few kilobytes plus `jsonrepair`. Check the bundle badge at the top for the current min+gzip number.
