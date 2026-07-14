@@ -64,7 +64,7 @@ const data = extractJsonWith(llmOutput, Schema);
 Or from the shell, with no glue code at all:
 
 ```bash
-claude -p '...' --output-format json | jq -r .result | npx llm-json-extract
+claude -p '...' | npx llm-json-extract
 ```
 
 No prompt gymnastics. No `"Respond with ONLY JSON, nothing else!!"` begging.
@@ -215,8 +215,7 @@ The package ships a command-line tool with the same extraction pipeline, so shel
 
 ```bash
 # pipe from stdin
-claude -p 'List 3 fruits. Reply as <result>{"items":[...]}</result>.' \
-  --output-format json | jq -r .result | llm-json-extract
+claude -p 'List 3 fruits. Reply as <result>{"items":[...]}</result>.' | llm-json-extract
 
 # or read a file, pretty-printed
 llm-json-extract --pretty response.txt

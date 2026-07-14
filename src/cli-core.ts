@@ -51,8 +51,7 @@ Exit codes:
   2  usage error
 
 Examples:
-  claude -p 'List 3 fruits. Reply as <result>{"items":[...]}</result>.' \\
-    --output-format json | jq -r .result | llm-json-extract
+  claude -p 'List 3 fruits. Reply as <result>{"items":[...]}</result>.' | llm-json-extract
   llm-json-extract --pretty response.txt
   llm-json-extract --tag answer --raw < response.txt
 `;
