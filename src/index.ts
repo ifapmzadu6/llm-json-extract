@@ -1,4 +1,4 @@
-import { jsonrepair } from "jsonrepair";
+import { repairJson } from "./repair.js";
 
 export interface ExtractOptions {
   /**
@@ -41,7 +41,7 @@ export interface ExtractOptions {
   tryBareJson?: boolean;
 
   /**
-   * Whether to run `jsonrepair` on the extracted string before `JSON.parse`.
+   * Whether to repair the extracted string before `JSON.parse`.
    * Fixes trailing commas, single quotes, comments, unquoted keys, etc.
    *
    * @default true
@@ -139,7 +139,7 @@ export function extractJsonString(text: string, options: ExtractOptions = {}): s
  * Extract and parse JSON from LLM output.
  *
  * Each candidate from {@link extractJsonCandidates} is tried in order;
- * the first one that successfully parses (after optional `jsonrepair`)
+ * the first one that successfully parses (after optional repair)
  * is returned. Throws {@link LlmJsonExtractError} only if no candidate
  * parses, or none was found.
  */
@@ -154,8 +154,8 @@ export function extractJson(text: string, options: ExtractOptions = {}): unknown
     });
   }
   const repair = options.repair ?? true;
-  // Two-pass: prefer object/array results over primitives, because jsonrepair
-  // happily turns bare words ("nope") into JSON strings, which would mask a
+  // Two-pass: prefer object/array results over primitives, because repair can
+  // turn bare words ("nope") into JSON strings, which would mask a
   // later candidate that holds the real structured answer.
   let lastError: unknown;
   let lastCandidate: string | null = null;
@@ -246,7 +246,7 @@ export function extractJsonWith<T>(
   }
   const repair = options.repair ?? true;
   // Two passes: try structured (object/array) candidates first, then primitives.
-  // Validators that reject primitives won't be tricked by jsonrepair turning
+  // Validators that reject primitives won't be tricked by repair turning
   // stray words into JSON strings.
   let lastError: unknown;
   let lastCandidate: string | null = null;
@@ -652,7 +652,13 @@ function tryParse(
   candidate: string,
   repair: boolean,
 ): { ok: true; value: unknown } | { ok: false; error: unknown } {
-  const input = repair ? safeRepair(candidate) : candidate;
+  try {
+    return { ok: true, value: JSON.parse(candidate) };
+  } catch (rawError) {
+    if (!repair) return { ok: false, error: rawError };
+  }
+
+  const input = safeRepair(candidate);
   try {
     return { ok: true, value: JSON.parse(input) };
   } catch (err) {
@@ -662,10 +668,10 @@ function tryParse(
 
 function safeRepair(input: string): string {
   try {
-    return jsonrepair(input);
+    return repairJson(input);
   } catch {
-    // jsonrepair threw — fall back to raw input so JSON.parse surfaces the
-    // original parse error instead of jsonrepair's internal one.
+    // Repair failed — fall back to raw input so JSON.parse surfaces the
+    // original parse error instead of the repairer's internal one.
     return input;
   }
 }

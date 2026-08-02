@@ -180,10 +180,116 @@ describe("extractJson (parse)", () => {
     expect(extractJson("{a: [1, 2}")).toEqual({ a: [1, 2] });
   });
 
+  it("repairs missing separators and Python-style literals", () => {
+    const text = "<result>{name: 'Ada' active: True values: [1 2 None]}</result>";
+    expect(extractJson(text)).toEqual({
+      name: "Ada",
+      active: true,
+      values: [1, 2, null],
+    });
+  });
+
+  it("repairs missing colons before containers and adjacent primitive values", () => {
+    const text = `<result>{"items"["x" null], "nested"{"ok": true}}</result>`;
+    expect(extractJson(text)).toEqual({
+      items: ["x", null],
+      nested: { ok: true },
+    });
+  });
+
+  it("repairs smart quotes and apostrophes in single-quoted strings", () => {
+    const text = String.raw`<result>{“name”: ‘O\'Connor’}</result>`;
+    expect(extractJson(text)).toEqual({ name: "O'Connor" });
+  });
+
+  it("closes truncated strings and containers", () => {
+    expect(extractJson("<result>{items: [1, 2</result>")).toEqual({ items: [1, 2] });
+    expect(extractJson("<result>{message: 'done}</result>")).toEqual({ message: "done" });
+  });
+
+  it("repairs escaped and concatenated strings", () => {
+    const escaped = String.raw`<result>{\"stringified\": \"content\"}</result>`;
+    expect(extractJson(escaped)).toEqual({ stringified: "content" });
+    expect(extractJson(`<result>{text: "long " + 'text'}</result>`)).toEqual({
+      text: "long text",
+    });
+  });
+
+  it("repairs unescaped quotes and newline-delimited JSON", () => {
+    expect(extractJson(`<result>{"text":"She said "hello"."}</result>`)).toEqual({
+      text: 'She said "hello".',
+    });
+    expect(extractJson(`<result>{"id":1}\n{"id":2}</result>`)).toEqual([{ id: 1 }, { id: 2 }]);
+  });
+
+  it("repairs fenced JSON inside a tag without the fence extraction fallback", () => {
+    const text = "<result>```json\n{answer: 42,}\n```</result>";
+    expect(extractJson(text, { tryCodeFence: false })).toEqual({ answer: 42 });
+  });
+
+  it("repairs ellipses, multi-word keys, and wrapped values", () => {
+    const text = `<result>{first name: 'Ada', values: [1, 2, ..., 9], id: NumberLong(2)}</result>`;
+    expect(extractJson(text)).toEqual({
+      "first name": "Ada",
+      values: [1, 2, 9],
+      id: 2,
+    });
+  });
+
   it("repair=false rejects malformed input", () => {
     expect(() => extractJson("<result>{a: 1}</result>", { repair: false })).toThrow(
       LlmJsonExtractError,
     );
+  });
+
+  it("preserves native JSON.parse semantics for already-valid JSON", () => {
+    expect(Object.is(extractJson("<result>-0</result>"), -0)).toBe(true);
+  });
+
+  it("repairs truncated numeric symbols", () => {
+    expect(Object.is(extractJson("<result>-</result>"), -0)).toBe(true);
+    expect(extractJson("<result>1.e2</result>")).toBe(100);
+  });
+
+  it("matches jsonrepair 3.15 edge behavior for keys and trailing commas", () => {
+    expect(extractJson("<result>{\u00a0a\u00a0:\u00a01}</result>")).toEqual({ "a\u00a0": 1 });
+    expect(extractJson("<result>[1,2,,]</result>")).toEqual([1, 2]);
+    expect(extractJson("<result>[1,,2]</result>")).toEqual([[1], 2]);
+    expect(extractJson("<result>[,,1,2]</result>")).toEqual([[], 1, 2]);
+    expect(extractJson("<result>{empty: [,,]}</result>")).toEqual({ empty: [] });
+    expect(extractJson("<result>[1,2,......]</result>")).toEqual([1, 2, "..."]);
+  });
+
+  it("repairs HTML-encoded quoted JSON supported by jsonrepair 3.15", () => {
+    const encoded = "<result>{&quot;message&quot;:&quot;Tom &amp; Jerry &lt;3&quot;}</result>";
+    expect(extractJson(encoded)).toEqual({ message: "Tom & Jerry <3" });
+    expect(extractJson("<result>&#x22;hello&#x22;</result>")).toBe("hello");
+  });
+
+  it("recognizes a missing comma after a primitive value", () => {
+    expect(extractJson('<result>{"active":true"count":2}</result>')).toEqual({
+      active: true,
+      count: 2,
+    });
+  });
+
+  it("handles long colonless text after a quote without regex backtracking", () => {
+    const tail = `a${" ".repeat(50_000)}`;
+    expect(extractJson(`<result>{"value":"x"${tail}}</result>`)).toEqual({
+      value: 'x"a',
+    });
+  });
+
+  it("repairs truncated strings with long interior whitespace in linear time", () => {
+    const value = `a${"\t".repeat(200_000)}z`;
+    const start = performance.now();
+    expect(extractJson(`<result>"${value}</result>`)).toBe(value);
+    expect(performance.now() - start).toBeLessThan(1_000);
+  });
+
+  it("repairs large numeric arrays without copying every remaining suffix", () => {
+    const values = Array.from({ length: 5_000 }, (_, index) => index);
+    expect(extractJson(`<result>[${values.join(",")},]</result>`)).toEqual(values);
   });
 
   it("throws extract error when no JSON found", () => {
@@ -341,7 +447,7 @@ describe("fallthrough across candidates", () => {
   });
 
   it("reports the structured candidate's error over a later primitive's", () => {
-    // Preferred (last) <result> body is bare prose that jsonrepair turns into
+    // Preferred (last) <result> body is bare prose that repair turns into
     // a string primitive; the earlier <result> is the real structured answer
     // but fails the schema. The reported error should point at the structured
     // candidate, not the stray prose.
