@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-08-02
+
+### Changed
+
+- Replace the `jsonrepair` runtime dependency with a purpose-built internal
+  repairer. It covers the documented 3.15 regular-parser categories, including
+  HTML-encoded quote entities. The public API and `repair` option remain
+  unchanged, but severely ambiguous malformed inputs can be interpreted
+  differently, so this ships as a major release.
+- The package now has zero runtime dependencies.
+
 ## [1.1.1] - 2026-07-14
 
 Version-only release; the package contents are identical to 1.1.0. Published

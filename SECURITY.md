@@ -2,8 +2,10 @@
 
 ## Supported Versions
 
-Only the latest published `0.x` release receives security fixes while the
-project is in pre-1.0. Once `1.0.0` ships, this section will be updated.
+| Version | Supported |
+| --- | --- |
+| 2.x | ✅ |
+| < 2.0 | ❌ |
 
 ## Reporting a Vulnerability
 
@@ -23,5 +25,4 @@ This library parses untrusted text. The intended threat model is:
   controlling the LLM output influence the calling program beyond the parsed
   value.
 - **Out of scope** — the LLM itself returning malicious content; downstream
-  misuse of the parsed value (e.g. passing it to `eval`); vulnerabilities in
-  `jsonrepair` (please report those upstream as well).
+  misuse of the parsed value (e.g. passing it to `eval`).
