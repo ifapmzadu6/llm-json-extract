@@ -280,6 +280,13 @@ describe("extractJson (parse)", () => {
     });
   });
 
+  it("repairs truncated strings with long interior whitespace in linear time", () => {
+    const value = `a${"\t".repeat(200_000)}z`;
+    const start = performance.now();
+    expect(extractJson(`<result>"${value}</result>`)).toBe(value);
+    expect(performance.now() - start).toBeLessThan(1_000);
+  });
+
   it("repairs large numeric arrays without copying every remaining suffix", () => {
     const values = Array.from({ length: 5_000 }, (_, index) => index);
     expect(extractJson(`<result>[${values.join(",")},]</result>`)).toEqual(values);

@@ -702,11 +702,22 @@ function isWhitespace(char: string | undefined): boolean {
 }
 
 function trimJsonWhitespace(value: string): string {
-  return trimJsonWhitespaceEnd(value.replace(/^[ \t\n\r]+/, ""));
+  let start = 0;
+  while (start < value.length && isJsonWhitespace(value[start])) start++;
+
+  let end = value.length;
+  while (end > start && isJsonWhitespace(value[end - 1])) end--;
+  return start === 0 && end === value.length ? value : value.slice(start, end);
 }
 
 function trimJsonWhitespaceEnd(value: string): string {
-  return value.replace(/[ \t\n\r]+$/, "");
+  let end = value.length;
+  while (end > 0 && isJsonWhitespace(value[end - 1])) end--;
+  return end === value.length ? value : value.slice(0, end);
+}
+
+function isJsonWhitespace(char: string | undefined): boolean {
+  return char === " " || char === "\t" || char === "\n" || char === "\r";
 }
 
 interface HtmlEntity {
