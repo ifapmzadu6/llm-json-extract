@@ -53,7 +53,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "node scripts/build.mjs && tsc --emitDeclarationOnly",
+    "build": "node scripts/build.mjs && tsc --emitDeclarationOnly --declarationMap false",
     "test": "vitest run",
     "test:smoke": "node test/smoke.mjs",
     "test:watch": "vitest",
