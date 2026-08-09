@@ -12,7 +12,7 @@ npm test           # vitest
 npm run lint       # biome check
 npm run fix        # biome auto-fix
 npm run typecheck  # tsc --noEmit
-npm run build      # tsup → dist/
+npm run build      # esbuild + tsc → dist/
 ```
 
 `npm test` runs the full suite; `npm run test:watch` for TDD.
