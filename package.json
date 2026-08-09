@@ -53,7 +53,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "node scripts/build.mjs && tsc --emitDeclarationOnly --declarationMap false",
     "test": "vitest run",
     "test:smoke": "node test/smoke.mjs",
     "test:watch": "vitest",
@@ -66,13 +66,10 @@
   "devDependencies": {
     "@biomejs/biome": "^2.5.3",
     "@types/node": "^26.1.1",
-    "tsup": "^8.5.1",
-    "typescript": "^6.0.3",
+    "esbuild": "^0.28.1",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.10",
     "zod": "^4.4.3"
-  },
-  "overrides": {
-    "esbuild": "0.28.1"
   },
   "publishConfig": {
     "access": "public"
