@@ -83,7 +83,7 @@ The Anthropic API has tool use. OpenAI has Structured Outputs. **But a huge amou
 
 And there's a quality angle: forcing a model into JSON-only output often **hurts accuracy on reasoning-heavy tasks**. The pattern that works better — and the one [Anthropic recommends](https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering/use-xml-tags) — is to let the model reason freely and wrap its final answer in an XML tag like `<result>…</result>`, then extract it.
 
-`llm-json-extract` is that pattern, productionized: tag extraction with **layered fallbacks** for every way models don't quite follow instructions, plus [`jsonrepair`](https://github.com/josdejong/jsonrepair) for the almost-JSON they produce, plus **schema validation** that automatically skips wrong candidates.
+`llm-json-extract` is that pattern, productionized: tag extraction with **layered fallbacks** for every way models don't quite follow instructions, plus **built-in repair** for the almost-JSON they produce, plus **schema validation** that automatically skips wrong candidates.
 
 ## Highlights
 
@@ -92,10 +92,10 @@ And there's a quality angle: forcing a model into JSON-only output often **hurts
 - 🪜 **Layered fallbacks** — tag → ` ```json ` fence → bare fence → balanced `{…}` / `[…]` in raw text
 - 🔁 **Parse-aware fallthrough** — if the best candidate fails to parse (or fails your schema), the next one is tried automatically
 - 🎯 **Example-echo safe** — `pickLast` grabs the *final* `<result>` block, not the example the model copied from your prompt
-- 🩹 **Repairs almost-JSON** — trailing commas, single quotes, comments, unquoted keys, via `jsonrepair`
+- 🩹 **Repairs almost-JSON** — trailing commas, single quotes, comments, unquoted keys, and truncated containers via built-in repair
 - ✅ **Bring your own validator** — pass a zod schema directly, or any `(unknown) => T` function (valibot, arktype, hand-rolled)
 - 🖥️ **`npx llm-json-extract` CLI included** — pipe `claude -p` / `codex exec` output straight through, zero glue code
-- 🪶 **Tiny & dependable** — one dependency (`jsonrepair`), zero required peer deps, ESM + CJS, full TypeScript types, tree-shakeable
+- 🪶 **Tiny & dependable** — zero runtime dependencies, ESM + CJS, full TypeScript types, tree-shakeable
 - 🧯 **Typed errors** — `LlmJsonExtractError` tells you *which stage* failed (`extract` / `parse` / `validate`) and hands you the raw text for debugging
 
 ## Install
@@ -154,7 +154,7 @@ Real model output is messy in predictable ways. All of these extract cleanly wit
 | Echoed your prompt's `<result>` example *and* gave a real answer | `pickLast` picks the final block; the echo is still tried as a fallback |
 | Ignored the tags and used a ` ```json ` code fence | Fence fallback catches it |
 | Ignored the fence too and dumped bare JSON mid-paragraph | Balanced `{…}` / `[…]` scanner catches it |
-| Emitted trailing commas, comments, single quotes, unquoted keys | `jsonrepair` fixes it before `JSON.parse` |
+| Emitted trailing commas, comments, single quotes, unquoted keys | Built-in repair fixes it before `JSON.parse` |
 | Put triple backticks *inside* a JSON string value | Fence parsing is CommonMark-aware; the fence doesn't end early |
 | Produced a first candidate that parses but fails your schema | `extractJsonWith` moves on to the next candidate |
 | Returned nothing JSON-shaped at all | Throws `LlmJsonExtractError` with `stage` and the raw text |
@@ -200,7 +200,7 @@ Candidates that parse but **fail validation are skipped** in favor of the next o
 const data = extractJson(llmOutput); // unknown
 ```
 
-Tries each candidate in order and returns the first that parses. Structured results (objects/arrays) are preferred over primitives, so `jsonrepair` turning a stray prose word into a JSON string can't mask the real answer.
+Tries each candidate in order and returns the first that parses. Structured results (objects/arrays) are preferred over primitives, so repair turning a stray prose word into a JSON string can't mask the real answer.
 
 ### `extractJsonString` / `extractJsonCandidates`
 
@@ -307,7 +307,7 @@ extractJson(llmOutput, {
   pickLast: true,     // prefer the tag match closest to the end of the text
   tryCodeFence: true, // fall back to ```json / ``` fenced blocks
   tryBareJson: true,  // fall back to balanced {...} / [...] runs in raw text
-  repair: true,       // run jsonrepair before JSON.parse
+  repair: true,       // repair common LLM JSON mistakes before JSON.parse
 });
 ```
 
@@ -345,7 +345,7 @@ input text
    └─ 3. bare JSON          balanced {…} / […] runs, string- and escape-aware
    │
    ▼
-candidate list ──► for each: jsonrepair → JSON.parse → (your validator)
+candidate list ──► for each: built-in repair → JSON.parse → (your validator)
                              first success wins; objects/arrays beat primitives
 ```
 
@@ -355,6 +355,8 @@ Details worth knowing:
 - The bare-JSON scanner respects JSON strings, escapes, and `//` / `/* */` comments, so braces inside string values never confuse it.
 - Fence parsing follows CommonMark closing rules — a ```` ``` ```` inside a JSON string won't terminate the block.
 - Everything is a single linear scan per strategy; the fence regexes were specifically hardened against ReDoS.
+- The independent built-in repairer covers the documented regular-parser categories from `jsonrepair` 3.15, including HTML-encoded quotes. Severely ambiguous malformed inputs can still be interpreted differently.
+- There is no streaming repair API: this project extracts candidates from complete text, so streamed input must be buffered first.
 
 ## When *not* to use this
 
@@ -371,7 +373,7 @@ If you're calling the Anthropic or OpenAI API directly, use **tool use** (Claude
 ## FAQ
 
 **Does it need zod?**
-No. There are zero required peer dependencies. Validation is opt-in and works with zod, valibot, arktype, or any function that throws on bad input.
+No. There are zero runtime dependencies. Validation is opt-in and works with zod, valibot, arktype, or any function that throws on bad input.
 
 **What if the model outputs *only* JSON, no tags or prose?**
 Works fine — the bare-JSON fallback picks it up. Tags just make extraction unambiguous.
@@ -383,7 +385,7 @@ Yes: `extractJson(text, { tags: ["answer"] })`.
 Buffer the stream first — extraction operates on complete text. (The CLI already does this when you pipe into it.)
 
 **How big is it?**
-A few kilobytes plus `jsonrepair`. Check the bundle badge at the top for the current min+gzip number.
+A few kilobytes with no runtime dependencies. Check the bundle badge at the top for the current min+gzip number.
 
 ## Contributing
 

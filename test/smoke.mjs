@@ -4,8 +4,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const sample = '<result>{"items":["apple","banana"],"count":2}</result>';
+const sample = "<result>{items: ['apple', 'banana',], count: 2}</result>";
 const expected = { items: ["apple", "banana"], count: 2 };
+const expectedExtracted = "{items: ['apple', 'banana',], count: 2}";
 
 const isWindows = process.platform === "win32";
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
@@ -38,13 +39,20 @@ try {
     ...npmOptions,
   });
 
+  const installedPackage = JSON.parse(
+    readFileSync(join(tempDir, "node_modules", name, "package.json"), "utf8"),
+  );
+  if (Object.keys(installedPackage.dependencies ?? {}).length !== 0) {
+    throw new Error("published package must not have runtime dependencies");
+  }
+
   const esmTest = `
     import assert from "node:assert/strict";
     import { extractJson, extractJsonString } from "${name}";
     const sample = ${JSON.stringify(sample)};
     const expected = ${JSON.stringify(expected)};
     assert.deepEqual(extractJson(sample), expected);
-    assert.equal(extractJsonString(sample), ${JSON.stringify('{"items":["apple","banana"],"count":2}')});
+    assert.equal(extractJsonString(sample), ${JSON.stringify(expectedExtracted)});
   `;
 
   const cjsTest = `
@@ -53,7 +61,7 @@ try {
     const sample = ${JSON.stringify(sample)};
     const expected = ${JSON.stringify(expected)};
     assert.deepEqual(extractJson(sample), expected);
-    assert.equal(extractJsonString(sample), ${JSON.stringify('{"items":["apple","banana"],"count":2}')});
+    assert.equal(extractJsonString(sample), ${JSON.stringify(expectedExtracted)});
   `;
 
   run(process.execPath, ["-e", "require('node:fs').mkdirSync(process.argv[1])", consumerDir]);
