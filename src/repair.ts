@@ -1,5 +1,5 @@
-const DOUBLE_QUOTES = new Set(['"', "\u201c", "\u201d"]);
-const SINGLE_QUOTES = new Set(["'", "`", "\u00b4", "\u2018", "\u2019"]);
+import { DOUBLE_QUOTES, isWordCharacter, SINGLE_QUOTES } from "./quotes.js";
+
 const ESCAPE_CHARACTERS: Readonly<Record<string, string>> = {
   '"': '"',
   "'": "'",
@@ -37,6 +37,29 @@ const NAMED_HTML_ENTITIES: ReadonlyArray<readonly [string, string]> = [
  */
 export function repairJson(input: string): string {
   return new JsonRepairParser(unwrapMarkdownCodeFence(input)).repair();
+}
+
+/** Keep word apostrophes without hiding adjacent values or keys from extraction. */
+export function isWordApostrophe(input: string, index: number): boolean {
+  const next = index + 1;
+  const char = input[next];
+  if (!isWordCharacter(input[index - 1]) || !isWordCharacter(char) || isDigit(char)) {
+    return false;
+  }
+  // The repairer accepts an omitted comma before a keyword or an unquoted key.
+  for (const [keyword] of KEYWORDS) {
+    if (!input.startsWith(keyword, next)) continue;
+    const after = input[next + keyword.length];
+    if (after === undefined || isWhitespace(after) || ",}]".includes(after)) return false;
+  }
+  if (isIdentifierStart(char)) {
+    for (let i = next + 1; i < input.length; i++) {
+      const current = input[i];
+      if (current === ":") return false;
+      if (!isIdentifierPart(current) && current !== "-" && !isWhitespace(current)) break;
+    }
+  }
+  return true;
 }
 
 class JsonRepairParser {

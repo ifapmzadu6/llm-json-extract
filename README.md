@@ -352,7 +352,7 @@ candidate list ──► for each: built-in repair → JSON.parse → (your vali
 Details worth knowing:
 
 - Tag matching is case-insensitive and tolerates attributes (`<result lang="json">`).
-- The bare-JSON scanner respects JSON strings, escapes, and `//` / `/* */` comments, so braces inside string values never confuse it.
+- The bare-JSON scanner respects strings delimited by double, single, or smart quotes, escapes, and `//` / `/* */` comments, so braces and comment markers inside quoted values stay inside the candidate.
 - Fence parsing follows CommonMark closing rules — a ```` ``` ```` inside a JSON string won't terminate the block.
 - Everything is a single linear scan per strategy; the fence regexes were specifically hardened against ReDoS.
 - The independent built-in repairer covers the documented regular-parser categories from `jsonrepair` 3.15, including HTML-encoded quotes. Severely ambiguous malformed inputs can still be interpreted differently.

@@ -514,6 +514,114 @@ describe("edge cases", () => {
     expect(extractJson(text)).toEqual({ a: 1, b: 2 });
   });
 
+  it.each([
+    { name: "single", open: "'", close: "'" },
+    { name: "backtick", open: "`", close: "`" },
+    { name: "acute", open: "´", close: "´" },
+    { name: "smart single", open: "‘", close: "’" },
+    { name: "right single", open: "’", close: "’" },
+    { name: "smart double", open: "“", close: "”" },
+    { name: "right double", open: "”", close: "”" },
+    { name: "mixed single family", open: "'", close: "’" },
+    { name: "mixed double family", open: "“", close: '"' },
+  ])("preserves brackets and comment markers inside $name quoted bare JSON", ({ open, close }) => {
+    const value = "a}b]c{d[e https://example.com /* literal */";
+    const body = `{${open}text${close}:${open}${value}${close}}`;
+    const text = `Answer: ${body} done.`;
+    expect(extractJsonCandidates(text)).toEqual([body]);
+    expect(extractJsonString(text)).toBe(body);
+    expect(extractJson(text)).toEqual({ text: value });
+    expect(() => extractJson(text, { repair: false })).toThrow(
+      expect.objectContaining({ stage: "parse", extracted: body }),
+    );
+  });
+
+  it("keeps other quote families and escaped apostrophes inside single-quoted strings", () => {
+    const body = String.raw`{'text':'O\'Connor says "a}b" // literal', 'path':'C:\\tmp\\'}`;
+    expect(extractJsonCandidates(body)).toEqual([body]);
+    expect(extractJson(body)).toEqual({
+      text: 'O\'Connor says "a}b" // literal',
+      path: "C:\\tmp\\",
+    });
+  });
+
+  it.each(["{'text':'O'Connor a}b // literal'}", "{‘text’:‘O’Connor a}b // literal’}"])(
+    "keeps unescaped word apostrophes inside quoted strings: %s",
+    (body) => {
+      expect(extractJsonCandidates(body)).toEqual([body]);
+      expect(extractJson(body)).toEqual({
+        text: body.includes("’Connor") ? "O’Connor a}b // literal" : "O'Connor a}b // literal",
+      });
+    },
+  );
+
+  it("does not start strings at apostrophes in bracketed prose", () => {
+    const text = `[Here's a draft] then {"ok":true}`;
+    expect(extractJsonCandidates(text)).toEqual(["[Here's a draft]", '{"ok":true}']);
+    expect(extractJson(text, { repair: false })).toEqual({ ok: true });
+  });
+
+  it.each([
+    { body: "['a'1]", value: ["a", 1] },
+    { body: "['a'true]", value: ["a", true] },
+    { body: "{'a':'x'next:1}", value: { a: "x", next: 1 } },
+  ])("keeps omitted commas after quoted values: $body", ({ body, value }) => {
+    expect(extractJsonCandidates(body)).toEqual([body]);
+    expect(extractJson(body)).toEqual(value);
+  });
+
+  it("preserves nested quoted objects as one candidate", () => {
+    const body = "{'items':[{'text':'a}b // literal'}, ‘x]y’], 'ok':true}";
+    expect(extractJsonCandidates(body)).toEqual([body]);
+    expect(extractJson(body)).toEqual({ items: [{ text: "a}b // literal" }, "x]y"], ok: true });
+  });
+
+  it("ignores quote delimiters inside real comments around single-quoted values", () => {
+    const body = `{
+      // ‘ ' " } ]
+      'url':'https://example.com',
+      /* ’ ' " } ] */
+      'text':'a}b'
+    }`;
+    expect(extractJsonCandidates(body)).toEqual([body]);
+    expect(extractJson(body)).toEqual({ url: "https://example.com", text: "a}b" });
+  });
+
+  it("does not close tags on tag text inside single-quoted values", () => {
+    const body = "{'text':'a}b </result> inside'}";
+    const text = `<result>${body}</result>`;
+    expect(extractJsonCandidates(text)).toEqual([body]);
+    expect(extractJsonString(text, { tryBareJson: false })).toBe(body);
+    expect(extractJson(text)).toEqual({ text: "a}b </result> inside" });
+  });
+
+  it("deduplicates complete quoted candidates from tags and fences", () => {
+    const body = "{'text':'a}b // literal'}";
+    for (const text of [`<result>${body}</result>`, `\`\`\`json\n${body}\n\`\`\``]) {
+      expect(extractJsonCandidates(text)).toEqual([body]);
+      expect(extractJson(text)).toEqual({ text: "a}b // literal" });
+    }
+  });
+
+  it("keeps valid double-quoted JSON strict and skips malformed alternate candidates", () => {
+    const body = '{"text":"O\'Connor } // literal", "url":"https://example.com"}';
+    const text = `{'text':'a}b'} then ${body}`;
+    expect(extractJsonCandidates(text)).toEqual(["{'text':'a}b'}", body]);
+    expect(extractJson(text, { repair: false })).toEqual({
+      text: "O'Connor } // literal",
+      url: "https://example.com",
+    });
+  });
+
+  it("keeps literal smart quotes inside valid ASCII-quoted JSON strings", () => {
+    const value = { text: "“a}b” and ‘x]y’ // literal", "“key}”": true };
+    const body = JSON.stringify(value);
+    for (const text of [body, `<result>${body}</result>`]) {
+      expect(extractJsonCandidates(text)).toEqual([body]);
+      expect(extractJson(text, { repair: false })).toEqual(value);
+    }
+  });
+
   it("ignores trailing prose after JSON", () => {
     const text = `<result>{"a":1}</result>\n\nThanks!`;
     expect(extractJson(text)).toEqual({ a: 1 });

@@ -1,4 +1,5 @@
-import { repairJson } from "./repair.js";
+import { DOUBLE_QUOTES, isWordCharacter, SINGLE_QUOTES } from "./quotes.js";
+import { isWordApostrophe, repairJson } from "./repair.js";
 
 export interface ExtractOptions {
   /**
@@ -441,15 +442,17 @@ function findAllCodeFences(text: string): string[] {
   return [...labeled, ...bare];
 }
 
+const JSON_QUOTES: ReadonlySet<string> = new Set(['"']);
+
 interface ScanState {
-  inString: boolean;
+  stringQuotes: ReadonlySet<string> | null;
   escaped: boolean;
   lineComment: boolean;
   blockComment: boolean;
 }
 
 function resetScanState(): ScanState {
-  return { inString: false, escaped: false, lineComment: false, blockComment: false };
+  return { stringQuotes: null, escaped: false, lineComment: false, blockComment: false };
 }
 
 /**
@@ -467,6 +470,8 @@ function stepScan(
   state: ScanState,
   ch: string,
   nextCh: string | undefined,
+  text: string,
+  index: number,
 ): {
   consumed: boolean;
   skipNext: boolean;
@@ -489,16 +494,32 @@ function stepScan(
   // Backslash is only an escape character inside JSON strings; outside, it's
   // just literal text. Treating it as escape unconditionally would skip the
   // next character in surrounding prose and could miscount brace balance.
-  if (ch === "\\" && state.inString) {
-    state.escaped = true;
+  if (state.stringQuotes !== null) {
+    if (ch === "\\") {
+      state.escaped = true;
+    } else if (state.stringQuotes === JSON_QUOTES ? ch === '"' : state.stringQuotes.has(ch)) {
+      // Word apostrophes such as O'Connor are accepted by the repairer too.
+      if (state.stringQuotes !== SINGLE_QUOTES || !isWordApostrophe(text, index)) {
+        state.stringQuotes = null;
+      }
+    }
     return { consumed: true, skipNext: false };
   }
   if (ch === '"') {
-    state.inString = !state.inString;
+    // Valid JSON may contain literal smart quotes inside an ASCII-quoted value.
+    state.stringQuotes = JSON_QUOTES;
     return { consumed: true, skipNext: false };
   }
-  if (state.inString) {
-    return { consumed: true, skipNext: false };
+  // Avoid set lookups for ordinary ASCII characters in large numeric arrays.
+  if (ch === "'" || ch === "`" || ch >= "\u0080") {
+    if (DOUBLE_QUOTES.has(ch)) {
+      state.stringQuotes = DOUBLE_QUOTES;
+      return { consumed: true, skipNext: false };
+    }
+    if (SINGLE_QUOTES.has(ch) && !isWordCharacter(text[index - 1])) {
+      state.stringQuotes = SINGLE_QUOTES;
+      return { consumed: true, skipNext: false };
+    }
   }
   if (ch === "/" && nextCh === "/") {
     state.lineComment = true;
@@ -533,7 +554,7 @@ function findAllBareJson(text: string): string[] {
       continue;
     }
 
-    const r = stepScan(scan, ch, text[i + 1]);
+    const r = stepScan(scan, ch, text[i + 1], text, i);
     if (r.skipNext) i++;
     if (r.consumed) continue;
 
@@ -584,7 +605,7 @@ function findBalancedEnd(text: string, start: number): number | null {
   for (let i = start + 1; i < text.length; i++) {
     const ch = text[i];
     if (ch === undefined) break;
-    const r = stepScan(scan, ch, text[i + 1]);
+    const r = stepScan(scan, ch, text[i + 1], text, i);
     if (r.skipNext) i++;
     if (r.consumed) continue;
 
