@@ -708,6 +708,81 @@ describe("extractJsonCandidates", () => {
     });
   });
 
+  it.each([
+    { body: "{items:[1],text:'done}", value: { items: [1], text: "done" } },
+    { body: "{meta:{ok:true},text:'done}", value: { meta: { ok: true }, text: "done" } },
+    { body: "[[1], 'done]", value: [[1], "done"] },
+  ])("prefers a recovered parent over its completed children: $body", ({ body, value }) => {
+    expect(extractJsonCandidates(body)).toEqual([body]);
+    expect(extractJson(body)).toEqual(value);
+    expect(() => extractJson(body, { repair: false })).toThrow(
+      expect.objectContaining({ stage: "parse", extracted: body }),
+    );
+  });
+
+  it.each(["[1]", '{"n":1}', "[1] }", "} [1]", "1]", "a}b", '[1] {"x":[2]}'])(
+    "preserves strict recovered objects containing JSON-shaped string text: %s",
+    (value) => {
+      const prefix = "[note: “90s music]";
+      const body = JSON.stringify({ text: value, nested: { values: [2, 3] } });
+      const text = `${prefix} then ${body}`;
+      expect(extractJsonCandidates(text)).toEqual([prefix, body]);
+      expect(extractJson(text, { repair: false })).toEqual({
+        text: value,
+        nested: { values: [2, 3] },
+      });
+    },
+  );
+
+  it("keeps independent candidates ordered while recovering a nested parent", () => {
+    const first = '{"example":0}';
+    const prefix = "[note: “90s music]";
+    const body = '{"text":"[1]"}';
+    const last = '{"last":true}';
+    const text = `${first} ${prefix} ${body} ${last}`;
+    expect(extractJsonCandidates(text)).toEqual([first, prefix, body, last]);
+    expect(extractJson(text, { repair: false })).toEqual({ example: 0 });
+    expect(extractJsonWith(text, z.object({ text: z.string() }), { repair: false })).toEqual({
+      text: "[1]",
+    });
+    expect(extractJsonWith(text, z.object({ last: z.literal(true) }), { repair: false })).toEqual({
+      last: true,
+    });
+  });
+
+  it.each(["'", "`", "´", "‘", "’", "“", "”"])(
+    "recovers strict parents when a literal %s ends a desynchronized string",
+    (quote) => {
+      const prefix = `[note: ${quote}90s music]`;
+      const value = { text: `${quote}]`, nested: { values: [2, 3] } };
+      const body = JSON.stringify(value);
+      const text = `${prefix} then ${body}`;
+      expect(extractJsonCandidates(text)).toEqual([prefix, body]);
+      expect(extractJson(text, { repair: false })).toEqual(value);
+    },
+  );
+
+  it("recovers a complete alternate-quoted parent after unmatched alternate prose", () => {
+    const prefix = "[note: '90s music]";
+    const body = "{'text':'[1]', 'nested':{'ok':true}}";
+    const text = `${prefix} then ${body}`;
+    expect(extractJsonCandidates(text)).toEqual([prefix, body]);
+    expect(
+      extractJsonWith(text, z.object({ text: z.string(), nested: z.object({ ok: z.boolean() }) })),
+    ).toEqual({ text: "[1]", nested: { ok: true } });
+  });
+
+  it("resynchronizes recovery after a complete string containing a literal ASCII quote", () => {
+    const body = `{text:'[1]"'}`;
+    const prefix = "[note: '90s music]";
+    const text = `${body} ${prefix} then {"ok":true} } ]`;
+    expect(extractJsonCandidates(text)).toEqual([body, prefix, '{"ok":true}']);
+    expect(extractJson(text)).toEqual({ text: '[1]"' });
+    expect(extractJsonWith(text, z.object({ ok: z.literal(true) }), { repair: false })).toEqual({
+      ok: true,
+    });
+  });
+
   it("keeps deeply mismatched tag bodies as a single candidate", () => {
     const body = `${"[".repeat(1000)}${"}".repeat(1000)}`;
     expect(extractJsonCandidates(`<result>${body}</result>`, { tryBareJson: false })).toEqual([

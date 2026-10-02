@@ -451,6 +451,7 @@ interface ScanState {
   blockComment: boolean;
   // Omitted from resets so the whole scan remembers whether recovery is needed.
   usedAlternateQuotes?: boolean;
+  recoveryRequested?: boolean;
 }
 
 function resetScanState(): ScanState {
@@ -498,11 +499,24 @@ function stepScan(
   // just literal text. Treating it as escape unconditionally would skip the
   // next character in surrounding prose and could miscount brace balance.
   if (state.stringQuotes !== null) {
+    // ASCII quotes inside an alternate string may belong to later strict JSON
+    // hidden by an unmatched prose opener. Keep recovery available even when
+    // desynchronized brackets subsequently empty the stack.
+    if (ch === '"' && state.stringQuotes !== JSON_QUOTES) state.recoveryRequested = true;
     if (ch === "\\") {
       state.escaped = true;
     } else if (state.stringQuotes === JSON_QUOTES ? ch === '"' : state.stringQuotes.has(ch)) {
       // Word apostrophes such as O'Connor are accepted by the repairer too.
       if (state.stringQuotes !== SINGLE_QUOTES || !isWordApostrophe(text, index)) {
+        // An unmatched prose quote can consume the opener of a later string.
+        // Remember that ambiguity even if a stray bracket later empties the stack.
+        if (
+          state.stringQuotes === SINGLE_QUOTES &&
+          isWordCharacter(nextCh) &&
+          !isWordCharacter(text[index - 1])
+        ) {
+          state.recoveryRequested = true;
+        }
         state.stringQuotes = null;
       }
     }
@@ -544,34 +558,75 @@ function findAllBareJson(text: string): string[] {
     return primary.map((span) => text.slice(span.start, span.end + 1));
   }
   // An unmatched alternate quote can hide a container closer and later JSON.
-  // Recover with the original ASCII-only rules, keeping complete primary spans.
-  const recovered = scanBareJson(text, false).spans.sort(
-    (a, b) => a.start - b.start || b.end - a.end,
-  );
-  const spans = [...primary];
-  let primaryIndex = 0;
-  for (const span of recovered) {
-    while (primary[primaryIndex] !== undefined && primary[primaryIndex]!.end < span.start) {
-      primaryIndex++;
+  // Recover with the original ASCII-only rules. A recovered parent must replace
+  // primary children, including JSON-shaped text inside a desynchronized string.
+  // A completed primary root can resynchronize recovery at its closer, so
+  // literal ASCII quotes inside it cannot hide later independent candidates.
+  const completedRoots = primary.filter((span) => span.root);
+  const recovered = outermostSpans(scanBareJson(text, false, completedRoots).spans);
+  const spans = [...recovered];
+  let recoveredIndex = 0;
+  let recoveredEndIndex = -1;
+  for (const span of primary) {
+    while (recovered[recoveredIndex] !== undefined && recovered[recoveredIndex]!.end < span.start) {
+      recoveredIndex++;
     }
-    const overlapping = primary[primaryIndex];
-    if (overlapping === undefined || overlapping.start > span.end) spans.push(span);
+    while (
+      recovered[recoveredEndIndex + 1] !== undefined &&
+      recovered[recoveredEndIndex + 1]!.start <= span.end
+    ) {
+      recoveredEndIndex++;
+    }
+    // Partially overlapping bounds disagree about where a container ends.
+    // Prefer recovery there; ordinary containment is resolved by outermostSpans.
+    if (
+      !partiallyOverlaps(span, recovered[recoveredIndex]) &&
+      !partiallyOverlaps(span, recovered[recoveredEndIndex])
+    ) {
+      spans.push(span);
+    }
   }
   return outermostSpans(spans).map((span) => text.slice(span.start, span.end + 1));
+}
+
+function partiallyOverlaps(
+  span: { start: number; end: number },
+  other: { start: number; end: number } | undefined,
+): boolean {
+  return (
+    other !== undefined &&
+    ((other.start < span.start && other.end >= span.start && other.end < span.end) ||
+      (other.start > span.start && other.start <= span.end && other.end > span.end))
+  );
 }
 
 function scanBareJson(
   text: string,
   allowAlternateQuotes: boolean,
-): { spans: { start: number; end: number }[]; needsRecovery: boolean } {
-  const spans: { start: number; end: number }[] = [];
+  completedRoots?: readonly { start: number; end: number }[],
+): { spans: { start: number; end: number; root: boolean }[]; needsRecovery: boolean } {
+  const spans: { start: number; end: number; root: boolean }[] = [];
   const stack: StackFrame[] = [];
   let lastBraceFrameIndex = -1;
   let lastBracketFrameIndex = -1;
+  let completedRootIndex = 0;
   const scan = resetScanState();
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
     if (ch === undefined) break;
+    const completedRoot = completedRoots?.[completedRootIndex];
+    if (completedRoot?.end === i) {
+      completedRootIndex++;
+      // Only synchronize a root with the same opener. A recovered parent that
+      // encloses a primary child must retain its own string and bracket state.
+      if (stack[0]?.start === completedRoot.start) {
+        stack.length = 0;
+        lastBraceFrameIndex = -1;
+        lastBracketFrameIndex = -1;
+        Object.assign(scan, resetScanState());
+        continue;
+      }
+    }
     if (stack.length === 0) {
       if (ch === "{" || ch === "[") {
         const state = pushStackFrame(stack, i, ch === "{" ? "}" : "]", {
@@ -601,6 +656,7 @@ function scanBareJson(
     if (ch === "}" || ch === "]") {
       const matchingIndex = ch === "}" ? lastBraceFrameIndex : lastBracketFrameIndex;
       if (matchingIndex === -1) {
+        if (scan.usedAlternateQuotes) scan.recoveryRequested = true;
         stack.length = 0;
         lastBraceFrameIndex = -1;
         lastBracketFrameIndex = -1;
@@ -608,7 +664,7 @@ function scanBareJson(
         continue;
       }
       const span = stack[matchingIndex];
-      if (span !== undefined) spans.push({ start: span.start, end: i });
+      if (span !== undefined) spans.push({ start: span.start, end: i, root: matchingIndex === 0 });
       stack.length = matchingIndex;
       lastBraceFrameIndex = span?.prevBraceFrameIndex ?? -1;
       lastBracketFrameIndex = span?.prevBracketFrameIndex ?? -1;
@@ -619,7 +675,8 @@ function scanBareJson(
   }
   return {
     spans,
-    needsRecovery: scan.usedAlternateQuotes === true && stack.length > 0,
+    needsRecovery:
+      scan.usedAlternateQuotes === true && (stack.length > 0 || scan.recoveryRequested === true),
   };
 }
 
@@ -687,8 +744,8 @@ function pushStackFrame(
   return { lastBraceFrameIndex: state.lastBraceFrameIndex, lastBracketFrameIndex: nextIndex };
 }
 
-function outermostSpans(spans: { start: number; end: number }[]): { start: number; end: number }[] {
-  const out: { start: number; end: number }[] = [];
+function outermostSpans<T extends { start: number; end: number }>(spans: T[]): T[] {
+  const out: T[] = [];
   for (const span of spans.sort((a, b) => a.start - b.start || b.end - a.end)) {
     const previous = out.at(-1);
     if (previous !== undefined && previous.start <= span.start && span.end <= previous.end) {
