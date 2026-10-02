@@ -353,8 +353,9 @@ Details worth knowing:
 
 - Tag matching is case-insensitive and tolerates attributes (`<result lang="json">`).
 - The bare-JSON scanner respects strings delimited by double, single, or smart quotes, escapes, and `//` / `/* */` comments, so braces and comment markers inside quoted values stay inside the candidate.
+- When an unmatched quote requires recovery, containers that parse without completing unmatched quotes or brackets are preserved as whole candidates. Recovery may select an enclosing parent, but cannot replace a complete container with an internal fragment. Raw candidates remain unchanged, including with `repair: false`.
 - Fence parsing follows CommonMark closing rules — a ```` ``` ```` inside a JSON string won't terminate the block.
-- Everything is a single linear scan per strategy; the fence regexes were specifically hardened against ReDoS.
+- Extraction uses bounded scans; bare-candidate recovery also checks disjoint containers and sorts candidate spans. The fence regexes were specifically hardened against ReDoS.
 - The independent built-in repairer covers the documented regular-parser categories from `jsonrepair` 3.15, including HTML-encoded quotes. Severely ambiguous malformed inputs can still be interpreted differently.
 - There is no streaming repair API: this project extracts candidates from complete text, so streamed input must be buffered first.
 

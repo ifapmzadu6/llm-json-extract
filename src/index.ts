@@ -1,5 +1,5 @@
 import { DOUBLE_QUOTES, isWordCharacter, SINGLE_QUOTES } from "./quotes.js";
-import { isWordApostrophe, repairJson } from "./repair.js";
+import { isClosedJsonContainer, isWordApostrophe, repairJson } from "./repair.js";
 
 export interface ExtractOptions {
   /**
@@ -557,73 +557,78 @@ function findAllBareJson(text: string): string[] {
   if (!primaryScan.needsRecovery) {
     return primary.map((span) => text.slice(span.start, span.end + 1));
   }
-  // An unmatched alternate quote can hide a container closer and later JSON.
-  // Recover with the original ASCII-only rules. A recovered parent must replace
-  // primary children, including JSON-shaped text inside a desynchronized string.
-  // A completed primary root can resynchronize recovery at its closer, so
-  // literal ASCII quotes inside it cannot hide later independent candidates.
-  const completedRoots = primary.filter((span) => span.root);
-  const recovered = outermostSpans(scanBareJson(text, false, completedRoots).spans);
-  const spans = [...recovered];
-  let recoveredIndex = 0;
-  let recoveredEndIndex = -1;
-  for (const span of primary) {
-    while (recovered[recoveredIndex] !== undefined && recovered[recoveredIndex]!.end < span.start) {
-      recoveredIndex++;
-    }
-    while (
-      recovered[recoveredEndIndex + 1] !== undefined &&
-      recovered[recoveredEndIndex + 1]!.start <= span.end
-    ) {
-      recoveredEndIndex++;
-    }
-    // Partially overlapping bounds disagree about where a container ends.
-    // Prefer recovery there; ordinary containment is resolved by outermostSpans.
-    if (
-      !partiallyOverlaps(span, recovered[recoveredIndex]) &&
-      !partiallyOverlaps(span, recovered[recoveredEndIndex])
-    ) {
-      spans.push(span);
-    }
-  }
-  return outermostSpans(spans).map((span) => text.slice(span.start, span.end + 1));
+  // A balanced span can still be prose or a fragment from a lost quote boundary.
+  // Protect containers that parse without completing unmatched quotes or brackets.
+  // These spans are disjoint, so classification never reparses nested substrings.
+  // Classification does not change the raw candidates or the caller's repair mode.
+  const protectedSpans = primary.filter((span) =>
+    isClosedJsonContainer(text.slice(span.start, span.end + 1)),
+  );
+  const recovered = scanBareJson(text, false, protectedSpans).spans.filter((span) => {
+    const first = firstSpanEndingAtOrAfter(protectedSpans, span.start);
+    // A recovery opener inside a protected candidate is string content or a
+    // child, not an independent candidate. In particular, it cannot escape into prose.
+    if (first !== undefined && first.start <= span.start) return false;
+    const last = firstSpanEndingAtOrAfter(protectedSpans, span.end);
+    // Only a whole enclosing parent may replace a protected child. Partial
+    // overlaps must not truncate it or consume a later independent candidate.
+    return last === undefined || last.start > span.end || last.end === span.end;
+  });
+  const selected = outermostSpans([...protectedSpans, ...recovered]);
+  // Keep other malformed primary candidates only in uncovered regions; they
+  // cannot displace a complete container or resurrect its nested fragments.
+  const remaining = primary.filter((span) => {
+    const next = firstSpanEndingAtOrAfter(selected, span.start);
+    return next === undefined || next.start > span.end;
+  });
+  return [...selected, ...remaining]
+    .sort((a, b) => a.start - b.start)
+    .map((span) => text.slice(span.start, span.end + 1));
 }
 
-function partiallyOverlaps(
-  span: { start: number; end: number },
-  other: { start: number; end: number } | undefined,
-): boolean {
-  return (
-    other !== undefined &&
-    ((other.start < span.start && other.end >= span.start && other.end < span.end) ||
-      (other.start > span.start && other.start <= span.end && other.end > span.end))
-  );
+interface JsonSpan {
+  start: number;
+  end: number;
+}
+
+/** Binary search over disjoint spans in document order. */
+function firstSpanEndingAtOrAfter(
+  spans: readonly JsonSpan[],
+  position: number,
+): JsonSpan | undefined {
+  let low = 0;
+  let high = spans.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (spans[middle]!.end < position) low = middle + 1;
+    else high = middle;
+  }
+  return spans[low];
 }
 
 function scanBareJson(
   text: string,
   allowAlternateQuotes: boolean,
-  completedRoots?: readonly { start: number; end: number }[],
-): { spans: { start: number; end: number; root: boolean }[]; needsRecovery: boolean } {
-  const spans: { start: number; end: number; root: boolean }[] = [];
+  protectedSpans?: readonly JsonSpan[],
+): { spans: JsonSpan[]; needsRecovery: boolean } {
+  const spans: JsonSpan[] = [];
   const stack: StackFrame[] = [];
   let lastBraceFrameIndex = -1;
   let lastBracketFrameIndex = -1;
-  let completedRootIndex = 0;
+  let protectedIndex = 0;
   const scan = resetScanState();
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
     if (ch === undefined) break;
-    const completedRoot = completedRoots?.[completedRootIndex];
-    if (completedRoot?.end === i) {
-      completedRootIndex++;
-      // Only synchronize a root with the same opener. A recovered parent that
-      // encloses a primary child must retain its own string and bracket state.
-      if (stack[0]?.start === completedRoot.start) {
-        stack.length = 0;
-        lastBraceFrameIndex = -1;
-        lastBracketFrameIndex = -1;
-        Object.assign(scan, resetScanState());
+    const protectedSpan = protectedSpans?.[protectedIndex];
+    if (protectedSpan?.start === i) {
+      protectedIndex++;
+      if (scan.stringQuotes === null && !scan.lineComment && !scan.blockComment) {
+        // Treat a closed container as an opaque value, including inside a
+        // recoverable parent. Its strings cannot spawn false recovery roots.
+        // Inside an ASCII string, the enclosing recovery candidate owns the
+        // quote state; JSON-shaped text there must remain ordinary string content.
+        i = protectedSpan.end;
         continue;
       }
     }
@@ -664,7 +669,7 @@ function scanBareJson(
         continue;
       }
       const span = stack[matchingIndex];
-      if (span !== undefined) spans.push({ start: span.start, end: i, root: matchingIndex === 0 });
+      if (span !== undefined) spans.push({ start: span.start, end: i });
       stack.length = matchingIndex;
       lastBraceFrameIndex = span?.prevBraceFrameIndex ?? -1;
       lastBracketFrameIndex = span?.prevBracketFrameIndex ?? -1;

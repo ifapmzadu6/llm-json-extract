@@ -39,6 +39,23 @@ export function repairJson(input: string): string {
   return new JsonRepairParser(unwrapMarkdownCodeFence(input)).repair();
 }
 
+/** Internal extraction guard: quotes and containers must have complete boundaries. */
+export function isClosedJsonContainer(input: string): boolean {
+  if (input[0] !== "{" && input[0] !== "[") return false;
+  try {
+    JSON.parse(input);
+    return true;
+  } catch {
+    try {
+      const repaired = new JsonRepairParser(input, true).repair();
+      const value: unknown = JSON.parse(repaired);
+      return typeof value === "object" && value !== null;
+    } catch {
+      return false;
+    }
+  }
+}
+
 /** Keep word apostrophes without hiding adjacent values or keys from extraction. */
 export function isWordApostrophe(input: string, index: number): boolean {
   const next = index + 1;
@@ -67,7 +84,14 @@ class JsonRepairParser {
   private position = 0;
   private significantIndices: { start: number; values: Uint32Array } | undefined;
 
-  constructor(private readonly input: string) {}
+  constructor(
+    private readonly input: string,
+    private readonly requireCompleteDelimiters = false,
+  ) {}
+
+  private missingCloser(closer: string): void {
+    if (this.requireCompleteDelimiters) throw this.syntaxError(`Missing closing ${closer}`);
+  }
 
   repair(): string {
     this.skipIgnorable();
@@ -164,7 +188,10 @@ class JsonRepairParser {
       }
       // Let the parent consume a mismatched closer; this synthesizes the
       // missing `}` without losing the parent's delimiter.
-      if (this.peek() === "]" || this.atEnd()) break;
+      if (this.peek() === "]" || this.atEnd()) {
+        this.missingCloser("}");
+        break;
+      }
       if (this.skipEllipsis()) continue;
 
       const key = this.parseObjectKey();
@@ -203,7 +230,10 @@ class JsonRepairParser {
         this.position++;
         break;
       }
-      if (this.peek() === "]" || this.atEnd()) break;
+      if (this.peek() === "]" || this.atEnd()) {
+        this.missingCloser("}");
+        break;
+      }
       // Otherwise the comma was omitted; the next loop parses the next key.
     }
 
@@ -229,6 +259,7 @@ class JsonRepairParser {
           }
           this.position = checkpoint;
           this.pendingArraySplit = true;
+          this.missingCloser("]");
           break;
         }
       } else if (values.length > 0 && this.peek() === ",") {
@@ -244,6 +275,7 @@ class JsonRepairParser {
         }
         this.position = checkpoint;
         this.pendingArraySplit = true;
+        this.missingCloser("]");
         break;
       }
 
@@ -252,7 +284,10 @@ class JsonRepairParser {
         break;
       }
       // Synthesize a missing `]`, leaving `}` for the containing object.
-      if (this.peek() === "}" || this.atEnd()) break;
+      if (this.peek() === "}" || this.atEnd()) {
+        this.missingCloser("]");
+        break;
+      }
       if (this.skipEllipsis()) continue;
 
       values.push(this.parseValue());
@@ -266,7 +301,10 @@ class JsonRepairParser {
         this.position++;
         break;
       }
-      if (this.peek() === "}" || this.atEnd()) break;
+      if (this.peek() === "}" || this.atEnd()) {
+        this.missingCloser("]");
+        break;
+      }
       // Otherwise the comma was omitted; parse another value.
     }
 
@@ -363,13 +401,17 @@ class JsonRepairParser {
           escapedBoundary,
           openedByEntity,
         );
-        if (!hasEndQuote) return trimJsonWhitespaceEnd(value);
+        if (!hasEndQuote) {
+          this.missingCloser("quote");
+          return trimJsonWhitespaceEnd(value);
+        }
       }
 
       value += char;
       this.position++;
     }
 
+    this.missingCloser("quote");
     return trimJsonWhitespaceEnd(value);
   }
 
@@ -562,7 +604,10 @@ class JsonRepairParser {
     if (value.length === 0) throw this.syntaxError("Expected a JSON value");
 
     // A lone end quote most likely belongs to this unquoted string.
-    if (isQuote(this.peek()) && this.isLikelyClosingQuote(this.position)) this.position++;
+    if (isQuote(this.peek()) && this.isLikelyClosingQuote(this.position)) {
+      if (this.requireCompleteDelimiters) throw this.syntaxError("Missing opening quote");
+      this.position++;
+    }
     return value === "undefined" ? "null" : JSON.stringify(value);
   }
 

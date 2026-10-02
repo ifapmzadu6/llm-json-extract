@@ -783,6 +783,41 @@ describe("extractJsonCandidates", () => {
     });
   });
 
+  it("keeps a closed repairable candidate opaque to recovery and trailing prose", () => {
+    const body = `{'text':'} {"','keep':1}`;
+    const text = `${body} Explanation: "}" closes an object.`;
+    expect(extractJsonCandidates(text)[0]).toBe(body);
+    expect(extractJson(text)).toEqual({ text: '} {"', keep: 1 });
+  });
+
+  it("preserves a later strict candidate after an opaque repairable candidate", () => {
+    const body = `{'text':'} {"','keep':1}`;
+    const strict = '{"ok":true}';
+    const text = `${body} then ${strict} Explanation: "}" closes an object.`;
+    expect(extractJsonCandidates(text).slice(0, 2)).toEqual([body, strict]);
+    expect(extractJson(text)).toEqual({ text: '} {"', keep: 1 });
+    expect(extractJson(text, { repair: false })).toEqual({ ok: true });
+    expect(extractJsonWith(text, z.object({ ok: z.literal(true) }))).toEqual({ ok: true });
+  });
+
+  it("recovers a truncated parent without rescanning a closed child's string content", () => {
+    const body = `{child:{text:'} {"',keep:1},tail:'done}`;
+    expect(extractJsonCandidates(body)).toEqual([body]);
+    expect(extractJson(body)).toEqual({ child: { text: '} {"', keep: 1 }, tail: "done" });
+    expect(() => extractJson(body, { repair: false })).toThrow(
+      expect.objectContaining({ stage: "parse", extracted: body }),
+    );
+  });
+
+  it("does not protect a desynchronized fragment that needs an opening quote", () => {
+    const prefix = "[note: “90s music]";
+    const value = { "a[b'": "'a[b", nested: { keep: 1 } };
+    const body = JSON.stringify(value);
+    const text = `${prefix} then ${body} [note: '90s music]`;
+    expect(extractJsonCandidates(text)).toContain(body);
+    expect(extractJson(text, { repair: false })).toEqual(value);
+  });
+
   it("keeps deeply mismatched tag bodies as a single candidate", () => {
     const body = `${"[".repeat(1000)}${"}".repeat(1000)}`;
     expect(extractJsonCandidates(`<result>${body}</result>`, { tryBareJson: false })).toEqual([
