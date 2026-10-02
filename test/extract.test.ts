@@ -660,6 +660,54 @@ describe("extractJsonCandidates", () => {
     expect(extractJsonCandidates(text)).toEqual(['{"a":{"b":1},"c":[{"d":2}]}']);
   });
 
+  it("recovers later strict JSON after an unmatched single quote in bracketed prose", () => {
+    const text = `[note: '90s music] then {"ok":true}`;
+    expect(extractJsonCandidates(text)).toEqual(["[note: '90s music]", '{"ok":true}']);
+    expect(extractJson(text, { repair: false })).toEqual({ ok: true });
+  });
+
+  it("keeps earlier and later strict candidates around unmatched alternate quotes", () => {
+    const text = `{"example":0} [note: '90s music] then {"ok":true}`;
+    expect(extractJsonCandidates(text)).toEqual([
+      '{"example":0}',
+      "[note: '90s music]",
+      '{"ok":true}',
+    ]);
+    expect(extractJsonWith(text, z.object({ ok: z.literal(true) }), { repair: false })).toEqual({
+      ok: true,
+    });
+  });
+
+  it("passes bare strings with missing end quotes through to repair", () => {
+    const body = "{text:'done}";
+    expect(extractJsonCandidates(body)).toEqual([body]);
+    expect(extractJson(body)).toEqual({ text: "done" });
+    expect(() => extractJson(body, { repair: false })).toThrow(
+      expect.objectContaining({ stage: "parse", extracted: body }),
+    );
+  });
+
+  it.each(["'", "`", "´", "‘", "’", "“", "”"])(
+    "recovers strict JSON after an unmatched %s delimiter",
+    (quote) => {
+      const prefix = `[note: ${quote}90s music]`;
+      const text = `${prefix} then {"ok":true}`;
+      expect(extractJsonCandidates(text)).toEqual([prefix, '{"ok":true}']);
+      expect(extractJson(text, { repair: false })).toEqual({ ok: true });
+      expect(extractJson(`{text:${quote}done}`)).toEqual({ text: "done" });
+    },
+  );
+
+  it("keeps complete quoted spans while recovering later independent candidates", () => {
+    const body = "{'text':'a{b'}";
+    const prefix = "[note: '90s music]";
+    const text = `${body} ${prefix} then {"ok":true} }`;
+    expect(extractJsonCandidates(text)).toEqual([body, prefix, '{"ok":true}']);
+    expect(extractJsonWith(text, z.object({ ok: z.literal(true) }), { repair: false })).toEqual({
+      ok: true,
+    });
+  });
+
   it("keeps deeply mismatched tag bodies as a single candidate", () => {
     const body = `${"[".repeat(1000)}${"}".repeat(1000)}`;
     expect(extractJsonCandidates(`<result>${body}</result>`, { tryBareJson: false })).toEqual([

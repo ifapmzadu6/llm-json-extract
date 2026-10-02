@@ -449,6 +449,8 @@ interface ScanState {
   escaped: boolean;
   lineComment: boolean;
   blockComment: boolean;
+  // Omitted from resets so the whole scan remembers whether recovery is needed.
+  usedAlternateQuotes?: boolean;
 }
 
 function resetScanState(): ScanState {
@@ -472,6 +474,7 @@ function stepScan(
   nextCh: string | undefined,
   text: string,
   index: number,
+  allowAlternateQuotes = true,
 ): {
   consumed: boolean;
   skipNext: boolean;
@@ -511,13 +514,15 @@ function stepScan(
     return { consumed: true, skipNext: false };
   }
   // Avoid set lookups for ordinary ASCII characters in large numeric arrays.
-  if (ch === "'" || ch === "`" || ch >= "\u0080") {
+  if (allowAlternateQuotes && (ch === "'" || ch === "`" || ch >= "\u0080")) {
     if (DOUBLE_QUOTES.has(ch)) {
       state.stringQuotes = DOUBLE_QUOTES;
+      state.usedAlternateQuotes = true;
       return { consumed: true, skipNext: false };
     }
     if (SINGLE_QUOTES.has(ch) && !isWordCharacter(text[index - 1])) {
       state.stringQuotes = SINGLE_QUOTES;
+      state.usedAlternateQuotes = true;
       return { consumed: true, skipNext: false };
     }
   }
@@ -533,6 +538,32 @@ function stepScan(
 }
 
 function findAllBareJson(text: string): string[] {
+  const primaryScan = scanBareJson(text, true);
+  const primary = outermostSpans(primaryScan.spans);
+  if (!primaryScan.needsRecovery) {
+    return primary.map((span) => text.slice(span.start, span.end + 1));
+  }
+  // An unmatched alternate quote can hide a container closer and later JSON.
+  // Recover with the original ASCII-only rules, keeping complete primary spans.
+  const recovered = scanBareJson(text, false).spans.sort(
+    (a, b) => a.start - b.start || b.end - a.end,
+  );
+  const spans = [...primary];
+  let primaryIndex = 0;
+  for (const span of recovered) {
+    while (primary[primaryIndex] !== undefined && primary[primaryIndex]!.end < span.start) {
+      primaryIndex++;
+    }
+    const overlapping = primary[primaryIndex];
+    if (overlapping === undefined || overlapping.start > span.end) spans.push(span);
+  }
+  return outermostSpans(spans).map((span) => text.slice(span.start, span.end + 1));
+}
+
+function scanBareJson(
+  text: string,
+  allowAlternateQuotes: boolean,
+): { spans: { start: number; end: number }[]; needsRecovery: boolean } {
   const spans: { start: number; end: number }[] = [];
   const stack: StackFrame[] = [];
   let lastBraceFrameIndex = -1;
@@ -554,7 +585,7 @@ function findAllBareJson(text: string): string[] {
       continue;
     }
 
-    const r = stepScan(scan, ch, text[i + 1], text, i);
+    const r = stepScan(scan, ch, text[i + 1], text, i, allowAlternateQuotes);
     if (r.skipNext) i++;
     if (r.consumed) continue;
 
@@ -586,7 +617,10 @@ function findAllBareJson(text: string): string[] {
       }
     }
   }
-  return outermostSpans(spans).map((span) => text.slice(span.start, span.end + 1));
+  return {
+    spans,
+    needsRecovery: scan.usedAlternateQuotes === true && stack.length > 0,
+  };
 }
 
 function findBalancedEnd(text: string, start: number): number | null {

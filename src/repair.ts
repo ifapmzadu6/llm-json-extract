@@ -65,6 +65,7 @@ export function isWordApostrophe(input: string, index: number): boolean {
 class JsonRepairParser {
   private pendingArraySplit = false;
   private position = 0;
+  private significantIndices: { start: number; values: Uint32Array } | undefined;
 
   constructor(private readonly input: string) {}
 
@@ -378,27 +379,27 @@ class JsonRepairParser {
     escapedBoundary: boolean,
     openedByEntity: boolean,
   ): boolean {
+    const boundaryCache = new Map<number, boolean>();
     for (let index = start; index < this.input.length; index++) {
       const char = this.input[index];
       if (openedByEntity && char === "&") {
         const entity = matchHtmlEntity(this.input, index);
         if (entity !== null) {
-          if (
-            quoteFamily.has(entity.char) &&
-            this.isLikelyClosingQuoteAfter(index + entity.length, false)
-          ) {
-            return true;
+          if (quoteFamily.has(entity.char)) {
+            if (this.isLikelyClosingQuoteAfter(index + entity.length, false, boundaryCache)) {
+              return true;
+            }
+            this.prepareSignificantIndices(start);
           }
           index += entity.length - 1;
           continue;
         }
       }
       const quotePosition = escapedBoundary && char === "\\" ? index + 1 : index;
-      if (
-        quoteFamily.has(this.input[quotePosition] ?? "") &&
-        this.isLikelyClosingQuoteAfter(quotePosition + 1, false)
-      ) {
-        return true;
+      if (quoteFamily.has(this.input[quotePosition] ?? "")) {
+        if (this.isLikelyClosingQuoteAfter(quotePosition + 1, false, boundaryCache)) return true;
+        // Most complete strings accept their first end quote without a table.
+        this.prepareSignificantIndices(start);
       }
       if (char === "\\") index++;
     }
@@ -638,23 +639,30 @@ class JsonRepairParser {
     return this.isLikelyClosingQuoteAfter(index + 1);
   }
 
-  private isLikelyClosingQuoteAfter(afterQuote: number, allowMissingComma = true): boolean {
+  private isLikelyClosingQuoteAfter(
+    afterQuote: number,
+    allowMissingComma = true,
+    boundaryCache?: Map<number, boolean>,
+  ): boolean {
     const next = this.nextSignificantIndex(afterQuote);
+    // Rejected speculative quotes often share the same following token.
+    const cached = boundaryCache?.get(next);
+    if (cached !== undefined) return cached;
     const char = this.input[next];
-    if (char === undefined || ",:[]{}+);".includes(char) || isQuote(char) || isDigit(char)) {
-      return true;
-    }
-
     // Whitespace between the quote and a new value generally means the comma
     // was omitted. With no whitespace, assume the quote itself was unescaped.
     // A speculative end quote inside trailing comment prose needs a stronger
     // boundary than whitespace before another bare word.
-    if (allowMissingComma && next > afterQuote && this.canStartValueAt(next)) return true;
-
-    if (this.isKeywordAt(next)) return true;
-    if (this.looksLikeObjectKeyAt(next)) return true;
-
-    return false;
+    const result =
+      char === undefined ||
+      ",:[]{}+);".includes(char) ||
+      isQuote(char) ||
+      isDigit(char) ||
+      (allowMissingComma && next > afterQuote && this.canStartValueAt(next)) ||
+      this.isKeywordAt(next) ||
+      this.looksLikeObjectKeyAt(next);
+    boundaryCache?.set(next, result);
+    return result;
   }
 
   private isKeywordAt(index: number): boolean {
@@ -678,6 +686,10 @@ class JsonRepairParser {
   }
 
   private nextSignificantIndex(start: number): number {
+    const cached = this.significantIndices;
+    if (cached !== undefined && start >= cached.start) {
+      return cached.values[start - cached.start] ?? this.input.length;
+    }
     let index = start;
     while (index < this.input.length) {
       const char = this.input[index];
@@ -699,6 +711,37 @@ class JsonRepairParser {
       break;
     }
     return index;
+  }
+
+  private prepareSignificantIndices(start: number): void {
+    if (this.significantIndices !== undefined) return;
+    const end = this.input.length;
+    const values = new Uint32Array(end - start + 1);
+    values[end - start] = end;
+    let lineEnd = end;
+    let blockClose = end;
+    let nextBlockClose = end;
+    // Resolve whitespace/comment prefixes once, including overlapping /*/.
+    for (let index = end - 1; index >= start; index--) {
+      const char = this.input[index];
+      const next = this.input[index + 1];
+      if (char === "\n" || char === "\r") lineEnd = index;
+      if (char === "*" && next === "/") {
+        nextBlockClose = blockClose;
+        blockClose = index;
+      }
+      let significant = index;
+      if (isWhitespace(char)) {
+        significant = values[index + 1 - start]!;
+      } else if (char === "/" && next === "/") {
+        significant = values[lineEnd - start]!;
+      } else if (char === "/" && next === "*") {
+        const close = blockClose === index + 1 ? nextBlockClose : blockClose;
+        significant = close === end ? end : values[close + 2 - start]!;
+      }
+      values[index - start] = significant;
+    }
+    this.significantIndices = { start, values };
   }
 
   private onlyIgnorableAfter(start: number): boolean {

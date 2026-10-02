@@ -95,4 +95,28 @@ describe("quoted strings containing comment markers", () => {
     expect(JSON.parse(repairJson(`{text:'${value}'}`))).toEqual({ text: value });
     expect(performance.now() - start).toBeLessThan(1_000);
   });
+
+  it("rejects many speculative quotes without repeatedly scanning the same line comment", () => {
+    const body = `{text:'a} /* ${"b'//".repeat(8_000)}\nx`;
+    const start = performance.now();
+    expect(JSON.parse(repairJson(body))).toEqual({ text: "a" });
+    expect(extractJson(`<result>${body}</result>`, { tryBareJson: false })).toEqual({ text: "a" });
+    expect(performance.now() - start).toBeLessThan(1_000);
+  });
+
+  it("reuses the rejected boundary after a shared comment and long bare word", () => {
+    const body = `{text:'a} /* ${"b'//".repeat(2_000)}\n// another line\n${" ".repeat(20_000)}${"x".repeat(20_000)}`;
+    const start = performance.now();
+    expect(JSON.parse(repairJson(body))).toEqual({ text: "a" });
+    expect(performance.now() - start).toBeLessThan(1_000);
+  });
+
+  it.each(["/* */", "/**/", "/*/ */", "/* /*/", "\u200b/* */\u180e"])(
+    "keeps comment-prefix lookup semantics at overlapping tokens: %j",
+    (comment) => {
+      expect(JSON.parse(repairJson(`{text:'a} // literal'${comment}}`))).toEqual({
+        text: "a} // literal",
+      });
+    },
+  );
 });
