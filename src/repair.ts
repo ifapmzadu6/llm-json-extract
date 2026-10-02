@@ -307,6 +307,7 @@ class JsonRepairParser {
     this.position += escapedBoundary ? 2 : openedByEntity ? openingEntity.length : 1;
 
     let value = "";
+    let hasEndQuote = false;
     while (!this.atEnd()) {
       const char = this.peek();
       if (char === undefined) break;
@@ -348,8 +349,20 @@ class JsonRepairParser {
 
       // If the final container closer is reached without an end quote, leave
       // it for the object/array parser and synthesize the quote here.
-      if ((char === "}" || char === "]") && this.onlyIgnorableAfter(this.position + 1)) {
-        return trimJsonWhitespaceEnd(value);
+      if (
+        (char === "}" || char === "]") &&
+        !hasEndQuote &&
+        this.onlyIgnorableAfter(this.position + 1)
+      ) {
+        // Comment markers may still be literal string content. Prefer a real
+        // end quote over the truncated-string fallback, checking the suffix once.
+        hasEndQuote = this.hasClosingQuoteAfter(
+          this.position + 1,
+          quoteFamily,
+          escapedBoundary,
+          openedByEntity,
+        );
+        if (!hasEndQuote) return trimJsonWhitespaceEnd(value);
       }
 
       value += char;
@@ -357,6 +370,39 @@ class JsonRepairParser {
     }
 
     return trimJsonWhitespaceEnd(value);
+  }
+
+  private hasClosingQuoteAfter(
+    start: number,
+    quoteFamily: ReadonlySet<string>,
+    escapedBoundary: boolean,
+    openedByEntity: boolean,
+  ): boolean {
+    for (let index = start; index < this.input.length; index++) {
+      const char = this.input[index];
+      if (openedByEntity && char === "&") {
+        const entity = matchHtmlEntity(this.input, index);
+        if (entity !== null) {
+          if (
+            quoteFamily.has(entity.char) &&
+            this.isLikelyClosingQuoteAfter(index + entity.length, false)
+          ) {
+            return true;
+          }
+          index += entity.length - 1;
+          continue;
+        }
+      }
+      const quotePosition = escapedBoundary && char === "\\" ? index + 1 : index;
+      if (
+        quoteFamily.has(this.input[quotePosition] ?? "") &&
+        this.isLikelyClosingQuoteAfter(quotePosition + 1, false)
+      ) {
+        return true;
+      }
+      if (char === "\\") index++;
+    }
+    return false;
   }
 
   private parseString(): string {
@@ -592,7 +638,7 @@ class JsonRepairParser {
     return this.isLikelyClosingQuoteAfter(index + 1);
   }
 
-  private isLikelyClosingQuoteAfter(afterQuote: number): boolean {
+  private isLikelyClosingQuoteAfter(afterQuote: number, allowMissingComma = true): boolean {
     const next = this.nextSignificantIndex(afterQuote);
     const char = this.input[next];
     if (char === undefined || ",:[]{}+);".includes(char) || isQuote(char) || isDigit(char)) {
@@ -601,7 +647,9 @@ class JsonRepairParser {
 
     // Whitespace between the quote and a new value generally means the comma
     // was omitted. With no whitespace, assume the quote itself was unescaped.
-    if (next > afterQuote && this.canStartValueAt(next)) return true;
+    // A speculative end quote inside trailing comment prose needs a stronger
+    // boundary than whitespace before another bare word.
+    if (allowMissingComma && next > afterQuote && this.canStartValueAt(next)) return true;
 
     if (this.isKeywordAt(next)) return true;
     if (this.looksLikeObjectKeyAt(next)) return true;
