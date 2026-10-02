@@ -82,7 +82,9 @@ export function isWordApostrophe(input: string, index: number): boolean {
 class JsonRepairParser {
   private pendingArraySplit = false;
   private position = 0;
-  private significantIndices: { start: number; values: Uint32Array } | undefined;
+  private significantIndices: Uint32Array | undefined;
+  private significantScanWork = 0;
+  private closingQuoteSearches: ({ start: number; end: number } | undefined)[] | undefined;
 
   constructor(
     private readonly input: string,
@@ -421,7 +423,19 @@ class JsonRepairParser {
     escapedBoundary: boolean,
     openedByEntity: boolean,
   ): boolean {
+    // Requests advance with the parser. Reuse a previously found end quote
+    // until the next request passes it; otherwise many strings can search the
+    // same suffix. Quote family and boundary encoding have independent scans.
+    const mode =
+      (quoteFamily === DOUBLE_QUOTES ? 0 : 3) + (escapedBoundary ? 1 : openedByEntity ? 2 : 0);
+    this.closingQuoteSearches ??= [];
+    const searches = this.closingQuoteSearches;
+    const cached = searches[mode];
+    if (cached !== undefined && start >= cached.start && start <= cached.end) {
+      return cached.end < this.input.length;
+    }
     const boundaryCache = new Map<number, boolean>();
+    let end = this.input.length;
     for (let index = start; index < this.input.length; index++) {
       const char = this.input[index];
       if (openedByEntity && char === "&") {
@@ -429,9 +443,9 @@ class JsonRepairParser {
         if (entity !== null) {
           if (quoteFamily.has(entity.char)) {
             if (this.isLikelyClosingQuoteAfter(index + entity.length, false, boundaryCache)) {
-              return true;
+              end = index;
+              break;
             }
-            this.prepareSignificantIndices(start);
           }
           index += entity.length - 1;
           continue;
@@ -439,13 +453,15 @@ class JsonRepairParser {
       }
       const quotePosition = escapedBoundary && char === "\\" ? index + 1 : index;
       if (quoteFamily.has(this.input[quotePosition] ?? "")) {
-        if (this.isLikelyClosingQuoteAfter(quotePosition + 1, false, boundaryCache)) return true;
-        // Most complete strings accept their first end quote without a table.
-        this.prepareSignificantIndices(start);
+        if (this.isLikelyClosingQuoteAfter(quotePosition + 1, false, boundaryCache)) {
+          end = quotePosition;
+          break;
+        }
       }
       if (char === "\\") index++;
     }
-    return false;
+    searches[mode] = { start, end };
+    return end < this.input.length;
   }
 
   private parseString(): string {
@@ -732,9 +748,7 @@ class JsonRepairParser {
 
   private nextSignificantIndex(start: number): number {
     const cached = this.significantIndices;
-    if (cached !== undefined && start >= cached.start) {
-      return cached.values[start - cached.start] ?? this.input.length;
-    }
+    if (cached !== undefined) return cached[start] ?? this.input.length;
     let index = start;
     while (index < this.input.length) {
       const char = this.input[index];
@@ -749,25 +763,33 @@ class JsonRepairParser {
       }
       if (char === "/" && this.input[index + 1] === "*") {
         const close = this.input.indexOf("*/", index + 2);
-        if (close === -1) return this.input.length;
+        if (close === -1) {
+          index = this.input.length;
+          break;
+        }
         index = close + 2;
         continue;
       }
       break;
     }
+    // All callers share this budget, including failed onlyIgnorableAfter checks.
+    // At most two input lengths can be scanned before a single full index is
+    // built. Ordinary nonoverlapping whitespace/comment skips need no table.
+    this.significantScanWork += index - start;
+    if (this.significantScanWork > this.input.length) this.prepareSignificantIndices();
     return index;
   }
 
-  private prepareSignificantIndices(start: number): void {
+  private prepareSignificantIndices(): void {
     if (this.significantIndices !== undefined) return;
     const end = this.input.length;
-    const values = new Uint32Array(end - start + 1);
-    values[end - start] = end;
+    const values = new Uint32Array(end + 1);
+    values[end] = end;
     let lineEnd = end;
     let blockClose = end;
     let nextBlockClose = end;
     // Resolve whitespace/comment prefixes once, including overlapping /*/.
-    for (let index = end - 1; index >= start; index--) {
+    for (let index = end - 1; index >= 0; index--) {
       const char = this.input[index];
       const next = this.input[index + 1];
       if (char === "\n" || char === "\r") lineEnd = index;
@@ -777,16 +799,16 @@ class JsonRepairParser {
       }
       let significant = index;
       if (isWhitespace(char)) {
-        significant = values[index + 1 - start]!;
+        significant = values[index + 1]!;
       } else if (char === "/" && next === "/") {
-        significant = values[lineEnd - start]!;
+        significant = values[lineEnd]!;
       } else if (char === "/" && next === "*") {
         const close = blockClose === index + 1 ? nextBlockClose : blockClose;
-        significant = close === end ? end : values[close + 2 - start]!;
+        significant = close === end ? end : values[close + 2]!;
       }
-      values[index - start] = significant;
+      values[index] = significant;
     }
-    this.significantIndices = { start, values };
+    this.significantIndices = values;
   }
 
   private onlyIgnorableAfter(start: number): boolean {

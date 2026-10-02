@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractJson } from "../src/index.js";
+import { extractJson, extractJsonCandidates } from "../src/index.js";
 import { repairJson } from "../src/repair.js";
 
 describe("quoted strings containing comment markers", () => {
@@ -108,6 +108,28 @@ describe("quoted strings containing comment markers", () => {
     const body = `{text:'a} /* ${"b'//".repeat(2_000)}\n// another line\n${" ".repeat(20_000)}${"x".repeat(20_000)}`;
     const start = performance.now();
     expect(JSON.parse(repairJson(body))).toEqual({ text: "a" });
+    expect(performance.now() - start).toBeLessThan(1_000);
+  });
+
+  it("bounds raw and strict extraction when literal comments share a later newline", () => {
+    const body = `{text:'${"a} // ".repeat(8_000)}\nx "end"'}`;
+    const text = `${body} then {"ok":true}`;
+    const start = performance.now();
+    expect(extractJsonCandidates(text)).toEqual([body, '{"ok":true}']);
+    expect(extractJson(text, { repair: false })).toEqual({ ok: true });
+    expect(performance.now() - start).toBeLessThan(1_000);
+  });
+
+  it("reuses an end quote shared by lookahead from many complete strings", () => {
+    const count = 3_000;
+    const body = `[${"'a} // x' abc ".repeat(count)}'end "quoted"']`;
+    const expected = [
+      ...Array.from({ length: count }, () => ["a} // x", "abc"]).flat(),
+      'end "quoted"',
+    ];
+    const start = performance.now();
+    expect(JSON.parse(repairJson(body))).toEqual(expected);
+    expect(extractJsonCandidates(body)).toEqual([body]);
     expect(performance.now() - start).toBeLessThan(1_000);
   });
 
