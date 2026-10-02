@@ -1,4 +1,5 @@
-import { repairJson } from "./repair.js";
+import { DOUBLE_QUOTES, isWordCharacter, SINGLE_QUOTES } from "./quotes.js";
+import { isClosedJsonContainer, isWordApostrophe, repairJson } from "./repair.js";
 
 export interface ExtractOptions {
   /**
@@ -441,15 +442,20 @@ function findAllCodeFences(text: string): string[] {
   return [...labeled, ...bare];
 }
 
+const JSON_QUOTES: ReadonlySet<string> = new Set(['"']);
+
 interface ScanState {
-  inString: boolean;
+  stringQuotes: ReadonlySet<string> | null;
   escaped: boolean;
   lineComment: boolean;
   blockComment: boolean;
+  // Omitted from resets so the whole scan remembers whether recovery is needed.
+  usedAlternateQuotes?: boolean;
+  recoveryRequested?: boolean;
 }
 
 function resetScanState(): ScanState {
-  return { inString: false, escaped: false, lineComment: false, blockComment: false };
+  return { stringQuotes: null, escaped: false, lineComment: false, blockComment: false };
 }
 
 /**
@@ -467,6 +473,9 @@ function stepScan(
   state: ScanState,
   ch: string,
   nextCh: string | undefined,
+  text: string,
+  index: number,
+  allowAlternateQuotes = true,
 ): {
   consumed: boolean;
   skipNext: boolean;
@@ -489,16 +498,47 @@ function stepScan(
   // Backslash is only an escape character inside JSON strings; outside, it's
   // just literal text. Treating it as escape unconditionally would skip the
   // next character in surrounding prose and could miscount brace balance.
-  if (ch === "\\" && state.inString) {
-    state.escaped = true;
+  if (state.stringQuotes !== null) {
+    // ASCII quotes inside an alternate string may belong to later strict JSON
+    // hidden by an unmatched prose opener. Keep recovery available even when
+    // desynchronized brackets subsequently empty the stack.
+    if (ch === '"' && state.stringQuotes !== JSON_QUOTES) state.recoveryRequested = true;
+    if (ch === "\\") {
+      state.escaped = true;
+    } else if (state.stringQuotes === JSON_QUOTES ? ch === '"' : state.stringQuotes.has(ch)) {
+      // Word apostrophes such as O'Connor are accepted by the repairer too.
+      if (state.stringQuotes !== SINGLE_QUOTES || !isWordApostrophe(text, index)) {
+        // An unmatched prose quote can consume the opener of a later string.
+        // Remember that ambiguity even if a stray bracket later empties the stack.
+        if (
+          state.stringQuotes === SINGLE_QUOTES &&
+          isWordCharacter(nextCh) &&
+          !isWordCharacter(text[index - 1])
+        ) {
+          state.recoveryRequested = true;
+        }
+        state.stringQuotes = null;
+      }
+    }
     return { consumed: true, skipNext: false };
   }
   if (ch === '"') {
-    state.inString = !state.inString;
+    // Valid JSON may contain literal smart quotes inside an ASCII-quoted value.
+    state.stringQuotes = JSON_QUOTES;
     return { consumed: true, skipNext: false };
   }
-  if (state.inString) {
-    return { consumed: true, skipNext: false };
+  // Avoid set lookups for ordinary ASCII characters in large numeric arrays.
+  if (allowAlternateQuotes && (ch === "'" || ch === "`" || ch >= "\u0080")) {
+    if (DOUBLE_QUOTES.has(ch)) {
+      state.stringQuotes = DOUBLE_QUOTES;
+      state.usedAlternateQuotes = true;
+      return { consumed: true, skipNext: false };
+    }
+    if (SINGLE_QUOTES.has(ch) && !isWordCharacter(text[index - 1])) {
+      state.stringQuotes = SINGLE_QUOTES;
+      state.usedAlternateQuotes = true;
+      return { consumed: true, skipNext: false };
+    }
   }
   if (ch === "/" && nextCh === "/") {
     state.lineComment = true;
@@ -512,14 +552,86 @@ function stepScan(
 }
 
 function findAllBareJson(text: string): string[] {
-  const spans: { start: number; end: number }[] = [];
+  const primaryScan = scanBareJson(text, true);
+  const primary = outermostSpans(primaryScan.spans);
+  if (!primaryScan.needsRecovery) {
+    return primary.map((span) => text.slice(span.start, span.end + 1));
+  }
+  // A balanced span can still be prose or a fragment from a lost quote boundary.
+  // Protect containers that parse without completing unmatched quotes or brackets.
+  // These spans are disjoint, so classification never reparses nested substrings.
+  // Classification does not change the raw candidates or the caller's repair mode.
+  const protectedSpans = primary.filter((span) =>
+    isClosedJsonContainer(text.slice(span.start, span.end + 1)),
+  );
+  const recovered = scanBareJson(text, false, protectedSpans).spans.filter((span) => {
+    const first = firstSpanEndingAtOrAfter(protectedSpans, span.start);
+    // A recovery opener inside a protected candidate is string content or a
+    // child, not an independent candidate. In particular, it cannot escape into prose.
+    if (first !== undefined && first.start <= span.start) return false;
+    const last = firstSpanEndingAtOrAfter(protectedSpans, span.end);
+    // Only a whole enclosing parent may replace a protected child. Partial
+    // overlaps must not truncate it or consume a later independent candidate.
+    return last === undefined || last.start > span.end || last.end === span.end;
+  });
+  const selected = outermostSpans([...protectedSpans, ...recovered]);
+  // Keep other malformed primary candidates only in uncovered regions; they
+  // cannot displace a complete container or resurrect its nested fragments.
+  const remaining = primary.filter((span) => {
+    const next = firstSpanEndingAtOrAfter(selected, span.start);
+    return next === undefined || next.start > span.end;
+  });
+  return [...selected, ...remaining]
+    .sort((a, b) => a.start - b.start)
+    .map((span) => text.slice(span.start, span.end + 1));
+}
+
+interface JsonSpan {
+  start: number;
+  end: number;
+}
+
+/** Binary search over disjoint spans in document order. */
+function firstSpanEndingAtOrAfter(
+  spans: readonly JsonSpan[],
+  position: number,
+): JsonSpan | undefined {
+  let low = 0;
+  let high = spans.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (spans[middle]!.end < position) low = middle + 1;
+    else high = middle;
+  }
+  return spans[low];
+}
+
+function scanBareJson(
+  text: string,
+  allowAlternateQuotes: boolean,
+  protectedSpans?: readonly JsonSpan[],
+): { spans: JsonSpan[]; needsRecovery: boolean } {
+  const spans: JsonSpan[] = [];
   const stack: StackFrame[] = [];
   let lastBraceFrameIndex = -1;
   let lastBracketFrameIndex = -1;
+  let protectedIndex = 0;
   const scan = resetScanState();
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
     if (ch === undefined) break;
+    const protectedSpan = protectedSpans?.[protectedIndex];
+    if (protectedSpan?.start === i) {
+      protectedIndex++;
+      if (scan.stringQuotes === null && !scan.lineComment && !scan.blockComment) {
+        // Treat a closed container as an opaque value, including inside a
+        // recoverable parent. Its strings cannot spawn false recovery roots.
+        // Inside an ASCII string, the enclosing recovery candidate owns the
+        // quote state; JSON-shaped text there must remain ordinary string content.
+        i = protectedSpan.end;
+        continue;
+      }
+    }
     if (stack.length === 0) {
       if (ch === "{" || ch === "[") {
         const state = pushStackFrame(stack, i, ch === "{" ? "}" : "]", {
@@ -533,7 +645,7 @@ function findAllBareJson(text: string): string[] {
       continue;
     }
 
-    const r = stepScan(scan, ch, text[i + 1]);
+    const r = stepScan(scan, ch, text[i + 1], text, i, allowAlternateQuotes);
     if (r.skipNext) i++;
     if (r.consumed) continue;
 
@@ -549,6 +661,7 @@ function findAllBareJson(text: string): string[] {
     if (ch === "}" || ch === "]") {
       const matchingIndex = ch === "}" ? lastBraceFrameIndex : lastBracketFrameIndex;
       if (matchingIndex === -1) {
+        if (scan.usedAlternateQuotes) scan.recoveryRequested = true;
         stack.length = 0;
         lastBraceFrameIndex = -1;
         lastBracketFrameIndex = -1;
@@ -565,7 +678,11 @@ function findAllBareJson(text: string): string[] {
       }
     }
   }
-  return outermostSpans(spans).map((span) => text.slice(span.start, span.end + 1));
+  return {
+    spans,
+    needsRecovery:
+      scan.usedAlternateQuotes === true && (stack.length > 0 || scan.recoveryRequested === true),
+  };
 }
 
 function findBalancedEnd(text: string, start: number): number | null {
@@ -584,7 +701,7 @@ function findBalancedEnd(text: string, start: number): number | null {
   for (let i = start + 1; i < text.length; i++) {
     const ch = text[i];
     if (ch === undefined) break;
-    const r = stepScan(scan, ch, text[i + 1]);
+    const r = stepScan(scan, ch, text[i + 1], text, i);
     if (r.skipNext) i++;
     if (r.consumed) continue;
 
@@ -632,8 +749,8 @@ function pushStackFrame(
   return { lastBraceFrameIndex: state.lastBraceFrameIndex, lastBracketFrameIndex: nextIndex };
 }
 
-function outermostSpans(spans: { start: number; end: number }[]): { start: number; end: number }[] {
-  const out: { start: number; end: number }[] = [];
+function outermostSpans<T extends { start: number; end: number }>(spans: T[]): T[] {
+  const out: T[] = [];
   for (const span of spans.sort((a, b) => a.start - b.start || b.end - a.end)) {
     const previous = out.at(-1);
     if (previous !== undefined && previous.start <= span.start && span.end <= previous.end) {

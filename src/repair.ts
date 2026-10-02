@@ -1,5 +1,5 @@
-const DOUBLE_QUOTES = new Set(['"', "\u201c", "\u201d"]);
-const SINGLE_QUOTES = new Set(["'", "`", "\u00b4", "\u2018", "\u2019"]);
+import { DOUBLE_QUOTES, isWordCharacter, SINGLE_QUOTES } from "./quotes.js";
+
 const ESCAPE_CHARACTERS: Readonly<Record<string, string>> = {
   '"': '"',
   "'": "'",
@@ -39,11 +39,61 @@ export function repairJson(input: string): string {
   return new JsonRepairParser(unwrapMarkdownCodeFence(input)).repair();
 }
 
+/** Internal extraction guard: quotes and containers must have complete boundaries. */
+export function isClosedJsonContainer(input: string): boolean {
+  if (input[0] !== "{" && input[0] !== "[") return false;
+  try {
+    JSON.parse(input);
+    return true;
+  } catch {
+    try {
+      const repaired = new JsonRepairParser(input, true).repair();
+      const value: unknown = JSON.parse(repaired);
+      return typeof value === "object" && value !== null;
+    } catch {
+      return false;
+    }
+  }
+}
+
+/** Keep word apostrophes without hiding adjacent values or keys from extraction. */
+export function isWordApostrophe(input: string, index: number): boolean {
+  const next = index + 1;
+  const char = input[next];
+  if (!isWordCharacter(input[index - 1]) || !isWordCharacter(char) || isDigit(char)) {
+    return false;
+  }
+  // The repairer accepts an omitted comma before a keyword or an unquoted key.
+  for (const [keyword] of KEYWORDS) {
+    if (!input.startsWith(keyword, next)) continue;
+    const after = input[next + keyword.length];
+    if (after === undefined || isWhitespace(after) || ",}]".includes(after)) return false;
+  }
+  if (isIdentifierStart(char)) {
+    for (let i = next + 1; i < input.length; i++) {
+      const current = input[i];
+      if (current === ":") return false;
+      if (!isIdentifierPart(current) && current !== "-" && !isWhitespace(current)) break;
+    }
+  }
+  return true;
+}
+
 class JsonRepairParser {
   private pendingArraySplit = false;
   private position = 0;
+  private significantIndices: Uint32Array | undefined;
+  private significantScanWork = 0;
+  private closingQuoteSearches: ({ start: number; end: number } | undefined)[] | undefined;
 
-  constructor(private readonly input: string) {}
+  constructor(
+    private readonly input: string,
+    private readonly requireCompleteDelimiters = false,
+  ) {}
+
+  private missingCloser(closer: string): void {
+    if (this.requireCompleteDelimiters) throw this.syntaxError(`Missing closing ${closer}`);
+  }
 
   repair(): string {
     this.skipIgnorable();
@@ -140,7 +190,10 @@ class JsonRepairParser {
       }
       // Let the parent consume a mismatched closer; this synthesizes the
       // missing `}` without losing the parent's delimiter.
-      if (this.peek() === "]" || this.atEnd()) break;
+      if (this.peek() === "]" || this.atEnd()) {
+        this.missingCloser("}");
+        break;
+      }
       if (this.skipEllipsis()) continue;
 
       const key = this.parseObjectKey();
@@ -179,7 +232,10 @@ class JsonRepairParser {
         this.position++;
         break;
       }
-      if (this.peek() === "]" || this.atEnd()) break;
+      if (this.peek() === "]" || this.atEnd()) {
+        this.missingCloser("}");
+        break;
+      }
       // Otherwise the comma was omitted; the next loop parses the next key.
     }
 
@@ -205,6 +261,7 @@ class JsonRepairParser {
           }
           this.position = checkpoint;
           this.pendingArraySplit = true;
+          this.missingCloser("]");
           break;
         }
       } else if (values.length > 0 && this.peek() === ",") {
@@ -220,6 +277,7 @@ class JsonRepairParser {
         }
         this.position = checkpoint;
         this.pendingArraySplit = true;
+        this.missingCloser("]");
         break;
       }
 
@@ -228,7 +286,10 @@ class JsonRepairParser {
         break;
       }
       // Synthesize a missing `]`, leaving `}` for the containing object.
-      if (this.peek() === "}" || this.atEnd()) break;
+      if (this.peek() === "}" || this.atEnd()) {
+        this.missingCloser("]");
+        break;
+      }
       if (this.skipEllipsis()) continue;
 
       values.push(this.parseValue());
@@ -242,7 +303,10 @@ class JsonRepairParser {
         this.position++;
         break;
       }
-      if (this.peek() === "}" || this.atEnd()) break;
+      if (this.peek() === "}" || this.atEnd()) {
+        this.missingCloser("]");
+        break;
+      }
       // Otherwise the comma was omitted; parse another value.
     }
 
@@ -284,6 +348,7 @@ class JsonRepairParser {
     this.position += escapedBoundary ? 2 : openedByEntity ? openingEntity.length : 1;
 
     let value = "";
+    let hasEndQuote = false;
     while (!this.atEnd()) {
       const char = this.peek();
       if (char === undefined) break;
@@ -325,15 +390,78 @@ class JsonRepairParser {
 
       // If the final container closer is reached without an end quote, leave
       // it for the object/array parser and synthesize the quote here.
-      if ((char === "}" || char === "]") && this.onlyIgnorableAfter(this.position + 1)) {
-        return trimJsonWhitespaceEnd(value);
+      if (
+        (char === "}" || char === "]") &&
+        !hasEndQuote &&
+        this.onlyIgnorableAfter(this.position + 1)
+      ) {
+        // Comment markers may still be literal string content. Prefer a real
+        // end quote over the truncated-string fallback, checking the suffix once.
+        hasEndQuote = this.hasClosingQuoteAfter(
+          this.position + 1,
+          quoteFamily,
+          escapedBoundary,
+          openedByEntity,
+        );
+        if (!hasEndQuote) {
+          this.missingCloser("quote");
+          return trimJsonWhitespaceEnd(value);
+        }
       }
 
       value += char;
       this.position++;
     }
 
+    this.missingCloser("quote");
     return trimJsonWhitespaceEnd(value);
+  }
+
+  private hasClosingQuoteAfter(
+    start: number,
+    quoteFamily: ReadonlySet<string>,
+    escapedBoundary: boolean,
+    openedByEntity: boolean,
+  ): boolean {
+    // Requests advance with the parser. Reuse a previously found end quote
+    // until the next request passes it; otherwise many strings can search the
+    // same suffix. Quote family and boundary encoding have independent scans.
+    const mode =
+      (quoteFamily === DOUBLE_QUOTES ? 0 : 3) + (escapedBoundary ? 1 : openedByEntity ? 2 : 0);
+    this.closingQuoteSearches ??= [];
+    const searches = this.closingQuoteSearches;
+    const cached = searches[mode];
+    if (cached !== undefined && start >= cached.start && start <= cached.end) {
+      return cached.end < this.input.length;
+    }
+    const boundaryCache = new Map<number, boolean>();
+    let end = this.input.length;
+    for (let index = start; index < this.input.length; index++) {
+      const char = this.input[index];
+      if (openedByEntity && char === "&") {
+        const entity = matchHtmlEntity(this.input, index);
+        if (entity !== null) {
+          if (quoteFamily.has(entity.char)) {
+            if (this.isLikelyClosingQuoteAfter(index + entity.length, false, boundaryCache)) {
+              end = index;
+              break;
+            }
+          }
+          index += entity.length - 1;
+          continue;
+        }
+      }
+      const quotePosition = escapedBoundary && char === "\\" ? index + 1 : index;
+      if (quoteFamily.has(this.input[quotePosition] ?? "")) {
+        if (this.isLikelyClosingQuoteAfter(quotePosition + 1, false, boundaryCache)) {
+          end = quotePosition;
+          break;
+        }
+      }
+      if (char === "\\") index++;
+    }
+    searches[mode] = { start, end };
+    return end < this.input.length;
   }
 
   private parseString(): string {
@@ -492,7 +620,10 @@ class JsonRepairParser {
     if (value.length === 0) throw this.syntaxError("Expected a JSON value");
 
     // A lone end quote most likely belongs to this unquoted string.
-    if (isQuote(this.peek()) && this.isLikelyClosingQuote(this.position)) this.position++;
+    if (isQuote(this.peek()) && this.isLikelyClosingQuote(this.position)) {
+      if (this.requireCompleteDelimiters) throw this.syntaxError("Missing opening quote");
+      this.position++;
+    }
     return value === "undefined" ? "null" : JSON.stringify(value);
   }
 
@@ -569,21 +700,30 @@ class JsonRepairParser {
     return this.isLikelyClosingQuoteAfter(index + 1);
   }
 
-  private isLikelyClosingQuoteAfter(afterQuote: number): boolean {
+  private isLikelyClosingQuoteAfter(
+    afterQuote: number,
+    allowMissingComma = true,
+    boundaryCache?: Map<number, boolean>,
+  ): boolean {
     const next = this.nextSignificantIndex(afterQuote);
+    // Rejected speculative quotes often share the same following token.
+    const cached = boundaryCache?.get(next);
+    if (cached !== undefined) return cached;
     const char = this.input[next];
-    if (char === undefined || ",:[]{}+);".includes(char) || isQuote(char) || isDigit(char)) {
-      return true;
-    }
-
     // Whitespace between the quote and a new value generally means the comma
     // was omitted. With no whitespace, assume the quote itself was unescaped.
-    if (next > afterQuote && this.canStartValueAt(next)) return true;
-
-    if (this.isKeywordAt(next)) return true;
-    if (this.looksLikeObjectKeyAt(next)) return true;
-
-    return false;
+    // A speculative end quote inside trailing comment prose needs a stronger
+    // boundary than whitespace before another bare word.
+    const result =
+      char === undefined ||
+      ",:[]{}+);".includes(char) ||
+      isQuote(char) ||
+      isDigit(char) ||
+      (allowMissingComma && next > afterQuote && this.canStartValueAt(next)) ||
+      this.isKeywordAt(next) ||
+      this.looksLikeObjectKeyAt(next);
+    boundaryCache?.set(next, result);
+    return result;
   }
 
   private isKeywordAt(index: number): boolean {
@@ -607,6 +747,8 @@ class JsonRepairParser {
   }
 
   private nextSignificantIndex(start: number): number {
+    const cached = this.significantIndices;
+    if (cached !== undefined) return cached[start] ?? this.input.length;
     let index = start;
     while (index < this.input.length) {
       const char = this.input[index];
@@ -621,13 +763,52 @@ class JsonRepairParser {
       }
       if (char === "/" && this.input[index + 1] === "*") {
         const close = this.input.indexOf("*/", index + 2);
-        if (close === -1) return this.input.length;
+        if (close === -1) {
+          index = this.input.length;
+          break;
+        }
         index = close + 2;
         continue;
       }
       break;
     }
+    // All callers share this budget, including failed onlyIgnorableAfter checks.
+    // At most two input lengths can be scanned before a single full index is
+    // built. Ordinary nonoverlapping whitespace/comment skips need no table.
+    this.significantScanWork += index - start;
+    if (this.significantScanWork > this.input.length) this.prepareSignificantIndices();
     return index;
+  }
+
+  private prepareSignificantIndices(): void {
+    if (this.significantIndices !== undefined) return;
+    const end = this.input.length;
+    const values = new Uint32Array(end + 1);
+    values[end] = end;
+    let lineEnd = end;
+    let blockClose = end;
+    let nextBlockClose = end;
+    // Resolve whitespace/comment prefixes once, including overlapping /*/.
+    for (let index = end - 1; index >= 0; index--) {
+      const char = this.input[index];
+      const next = this.input[index + 1];
+      if (char === "\n" || char === "\r") lineEnd = index;
+      if (char === "*" && next === "/") {
+        nextBlockClose = blockClose;
+        blockClose = index;
+      }
+      let significant = index;
+      if (isWhitespace(char)) {
+        significant = values[index + 1]!;
+      } else if (char === "/" && next === "/") {
+        significant = values[lineEnd]!;
+      } else if (char === "/" && next === "*") {
+        const close = blockClose === index + 1 ? nextBlockClose : blockClose;
+        significant = close === end ? end : values[close + 2]!;
+      }
+      values[index] = significant;
+    }
+    this.significantIndices = values;
   }
 
   private onlyIgnorableAfter(start: number): boolean {
