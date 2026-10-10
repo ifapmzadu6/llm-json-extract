@@ -32,12 +32,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bare-JSON scanner, which could hide every later bracket on that line.
 - Scanning many unclosed tag bodies is now linear instead of quadratic.
 - CLI help no longer refers to `jsonrepair`.
+- TypeScript users who `require()` the package under `node16`/`nodenext`
+  module resolution now get CommonJS declarations (`dist/index.d.cts`)
+  instead of ESM ones ("masquerading as ESM"). Internal declaration files are
+  no longer shipped.
+- The CLI no longer prints an `EPIPE` stack trace when its output is piped
+  into a reader that exits early, such as `head`.
 
 ### Added
 
 - Property-based tests (fast-check): valid JSON surrounded by prose, tags, or
   fences round-trips unchanged; truncated output keeps its top-level shape;
   and arbitrary input only ever throws `LlmJsonExtractError`.
+- `npm run check:package` (are-the-types-wrong) in CI and before publishing.
+  The release workflow also verifies that the pushed tag matches the
+  `package.json` version and runs the packed-tarball smoke test.
 
 ## [2.0.0] - 2026-08-02
 

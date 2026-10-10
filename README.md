@@ -156,6 +156,9 @@ Real model output is messy in predictable ways. All of these extract cleanly wit
 | Ignored the fence too and dumped bare JSON mid-paragraph | Balanced `{…}` / `[…]` scanner catches it |
 | Emitted trailing commas, comments, single quotes, unquoted keys | Built-in repair fixes it before `JSON.parse` |
 | Put triple backticks *inside* a JSON string value | Fence parsing is CommonMark-aware; the fence doesn't end early |
+| Added "Hope this helps!" on its own line *inside* the tag or fence | The leading object/array is used; the prose is not merged into it |
+| Cited sources as `[1]` or wrote `[Thinking]` before bare JSON | Bracketed prose is tried only after real-looking data |
+| Got cut off by a token limit mid-answer (no closing tag, open brackets) | The truncated tail is extracted and repair closes the open strings and containers |
 | Produced a first candidate that parses but fails your schema | `extractJsonWith` moves on to the next candidate |
 | Returned nothing JSON-shaped at all | Throws `LlmJsonExtractError` with `stage` and the raw text |
 
@@ -268,8 +271,10 @@ async function askWithRetry<T>(prompt: string, schema: { parse: (x: unknown) => 
       return extractJsonWith(output, schema);
     } catch (e) {
       if (!(e instanceof LlmJsonExtractError)) throw e;
-      lastHint = `\n\nYour previous reply failed at the "${e.stage}" stage` +
-        `${e.extracted ? ` on: ${e.extracted}` : ""}. ` +
+      // e.message includes the parser or validator error (e.g. which field
+      // failed your schema), which is the most useful hint for the model.
+      lastHint = `\n\nYour previous reply failed at the "${e.stage}" stage: ${e.message}` +
+        `${e.extracted ? `\nIt contained: ${e.extracted}` : ""}\n` +
         `Reply again with valid JSON inside <result>...</result>.`;
     }
   }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -91,6 +91,23 @@ try {
   if (cliFailure.error !== undefined) throw cliFailure.error;
   assert.equal(cliFailure.status, 1, `CLI exited ${cliFailure.status}, expected 1`);
   assert.match(cliFailure.stderr, /stage: extract/);
+
+  // A reader that stops early (`| head`) must not produce an EPIPE stack trace.
+  const bigInput = join(tempDir, "big.txt");
+  const numbers = Array.from({ length: 200_000 }, (_, index) => index);
+  writeFileSync(bigInput, `<result>${JSON.stringify(numbers)}</result>`);
+  const earlyClose = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [cliScript, "--pretty", bigInput], { cwd: tempDir });
+    let stderr = "";
+    child.stderr.setEncoding("utf8").on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.stdout.once("data", () => child.stdout.destroy());
+    child.on("error", reject);
+    child.on("close", (status) => resolve({ status, stderr }));
+  });
+  assert.equal(earlyClose.stderr, "", `CLI wrote to stderr: ${earlyClose.stderr}`);
+  assert.equal(earlyClose.status, 0, `CLI exited ${earlyClose.status} after early close`);
 } finally {
   rmSync(tempDir, { recursive: true, force: true });
 }
