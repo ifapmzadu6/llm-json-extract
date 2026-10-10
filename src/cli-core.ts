@@ -38,7 +38,7 @@ Options:
   --first           Prefer the first tag match instead of the last.
   --no-fence        Disable the \`\`\`json / \`\`\` code-fence fallback.
   --no-bare         Disable the bare {...} / [...] fallback.
-  --no-repair       Disable jsonrepair before parsing.
+  --no-repair       Disable the built-in repair before parsing.
   -r, --raw         Print the preferred candidate as-is, without parsing
                     or repairing it.
   -p, --pretty      Pretty-print the parsed JSON (2-space indent).

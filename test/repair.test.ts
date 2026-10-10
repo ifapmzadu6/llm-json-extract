@@ -123,10 +123,9 @@ describe("quoted strings containing comment markers", () => {
   it("reuses an end quote shared by lookahead from many complete strings", () => {
     const count = 3_000;
     const body = `[${"'a} // x' abc ".repeat(count)}'end "quoted"']`;
-    const expected = [
-      ...Array.from({ length: count }, () => ["a} // x", "abc"]).flat(),
-      'end "quoted"',
-    ];
+    // Each bare word runs into the next quote, so (as in jsonrepair) the
+    // inner quotes are unescaped content of a single string.
+    const expected = [body.slice(2, -2)];
     const start = performance.now();
     expect(JSON.parse(repairJson(body))).toEqual(expected);
     expect(extractJsonCandidates(body)).toEqual([body]);
@@ -141,4 +140,29 @@ describe("quoted strings containing comment markers", () => {
       });
     },
   );
+});
+
+describe("jsonrepair-compatible quote handling", () => {
+  it("only closes an ASCII-quoted string with the same ASCII quote", () => {
+    expect(JSON.parse(repairJson("{'cmd': 'run `ls`'}"))).toEqual({ cmd: "run `ls`" });
+    expect(JSON.parse(repairJson("{'text': 'it’s fine'}"))).toEqual({ text: "it’s fine" });
+    expect(JSON.parse(repairJson('{"text": "say “hi” ok"}'))).toEqual({ text: "say “hi” ok" });
+    expect(extractJsonCandidates("Use {'cmd': 'run `ls`'} now")).toEqual(["{'cmd': 'run `ls`'}"]);
+  });
+
+  it("treats a quote followed by a word that runs into another quote as content", () => {
+    expect(JSON.parse(repairJson('{"q": "he said "hi" ok", "b": 1}'))).toEqual({
+      q: 'he said "hi" ok',
+      b: 1,
+    });
+  });
+
+  it("still recognizes a missing comma before an unquoted value", () => {
+    expect(JSON.parse(repairJson("['x' abc]"))).toEqual(["x", "abc"]);
+  });
+
+  it("does not join a trailing prose line as a newline-delimited value", () => {
+    expect(() => repairJson('{"a":1}\nHope this helps!')).toThrow(SyntaxError);
+    expect(() => repairJson('Note\n{"a":1}')).toThrow(SyntaxError);
+  });
 });

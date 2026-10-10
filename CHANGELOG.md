@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A tag or fence body followed by a prose line (`{…}\nHope this helps!`) no
+  longer comes back wrapped in an array with the prose. Newline-delimited JSON
+  is still joined, but only when every line is an object or array, and a
+  body's leading object/array is now also offered as a candidate on its own.
+- Bracketed prose such as `[1]` citations, `[Thinking]`, or Markdown link text
+  no longer wins over a later JSON object in bare-JSON fallback; such arrays
+  (no quotes, colons, or nested containers) are now tried last.
+- Output cut off mid-answer is now recovered: an opening tag with no closing
+  tag yields its body through the end of the text, and a bare object/array
+  still open at the end of the text becomes a candidate (tried before its
+  complete children), so the repairer can close it.
+- Restore jsonrepair 3.15 quote behavior: a string opened with an ASCII `'` or
+  `"` only closes with the same quote, so backticks and smart quotes inside it
+  are content (``{'cmd': 'run `ls`'}``). A quote followed by a word that runs
+  into another quote is treated as unescaped content
+  (`"he said "hi" ok"`) rather than the end of the string.
+- `//` glued to a word or colon (`http://`) no longer starts a comment in the
+  bare-JSON scanner, which could hide every later bracket on that line.
+- Scanning many unclosed tag bodies is now linear instead of quadratic.
+- CLI help no longer refers to `jsonrepair`.
+
 ## [2.0.0] - 2026-08-02
 
 ### Changed

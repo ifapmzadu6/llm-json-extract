@@ -340,9 +340,12 @@ try {
 input text
    │
    ├─ 1. tag matches        <result>…</result>, <json>…</json>, <output>…</output>
-   │       preferred match first (pickLast), then the rest in document order
+   │       preferred match first (pickLast), then the rest in document order;
+   │       a tag left unclosed (truncated output) runs to the end of the text
    ├─ 2. code fences        ```json blocks first, then bare ``` blocks
-   └─ 3. bare JSON          balanced {…} / […] runs, string- and escape-aware
+   └─ 3. bare JSON          balanced {…} / […] runs, string- and escape-aware,
+           plus a container still open at the end of the text;
+           bracketed prose like [1] or [Thinking] is tried last
    │
    ▼
 candidate list ──► for each: built-in repair → JSON.parse → (your validator)
@@ -352,6 +355,8 @@ candidate list ──► for each: built-in repair → JSON.parse → (your vali
 Details worth knowing:
 
 - Tag matching is case-insensitive and tolerates attributes (`<result lang="json">`).
+- If a tag or fence body is a complete object/array followed by a line of prose (`{…}\nHope this helps!`), that object/array is also offered as a candidate on its own. Newline-delimited JSON is only joined into an array when every line is an object or array, so a trailing prose line is never wrapped into the result.
+- `//` and `/* */` glued to a word or colon (`http://…`, `src/*`) are treated as text rather than comments.
 - The bare-JSON scanner respects strings delimited by double, single, or smart quotes, escapes, and `//` / `/* */` comments, so braces and comment markers inside quoted values stay inside the candidate.
 - When an unmatched quote requires recovery, containers that parse without completing unmatched quotes or brackets are preserved as whole candidates. Recovery may select an enclosing parent, but cannot replace a complete container with an internal fragment. Raw candidates remain unchanged, including with `repair: false`.
 - Fence parsing follows CommonMark closing rules — a ```` ``` ```` inside a JSON string won't terminate the block.
