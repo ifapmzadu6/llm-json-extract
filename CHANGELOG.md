@@ -19,7 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Output cut off mid-answer is now recovered: an opening tag with no closing
   tag yields its body through the end of the text, and a bare object/array
   still open at the end of the text becomes a candidate (tried before its
-  complete children), so the repairer can close it.
+  complete children), so the repairer can close it. A stray `[` or `{` in
+  earlier prose is not mistaken for the start of truncated data. A key cut
+  off at the end of the input (`{"a": 1, "b`) now repairs to `"b": null`, as
+  in jsonrepair, including when its closing quote is missing.
 - Restore jsonrepair 3.15 quote behavior: a string opened with an ASCII `'` or
   `"` only closes with the same quote, so backticks and smart quotes inside it
   are content (``{'cmd': 'run `ls`'}``). A quote followed by a word that runs
@@ -29,6 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bare-JSON scanner, which could hide every later bracket on that line.
 - Scanning many unclosed tag bodies is now linear instead of quadratic.
 - CLI help no longer refers to `jsonrepair`.
+
+### Added
+
+- Property-based tests (fast-check): valid JSON surrounded by prose, tags, or
+  fences round-trips unchanged; truncated output keeps its top-level shape;
+  and arbitrary input only ever throws `LlmJsonExtractError`.
 
 ## [2.0.0] - 2026-08-02
 

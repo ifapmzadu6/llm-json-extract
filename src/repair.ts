@@ -94,6 +94,8 @@ export function isWordApostrophe(input: string, index: number): boolean {
 
 class JsonRepairParser {
   private pendingArraySplit = false;
+  /** Strings closed at end of input rather than by a quote (truncation). */
+  private unterminatedStrings = 0;
   private position = 0;
   private significantIndices: Uint32Array | undefined;
   private significantScanWork = 0;
@@ -106,6 +108,7 @@ class JsonRepairParser {
 
   private missingCloser(closer: string): void {
     if (this.requireCompleteDelimiters) throw this.syntaxError(`Missing closing ${closer}`);
+    if (closer === "quote") this.unterminatedStrings++;
   }
 
   repair(): string {
@@ -215,7 +218,10 @@ class JsonRepairParser {
       }
       if (this.skipEllipsis()) continue;
 
+      const unterminatedBeforeKey = this.unterminatedStrings;
       const key = this.parseObjectKey();
+      // A key missing its end quote was cut off, like a key at end of input.
+      const truncatedKey = this.unterminatedStrings > unterminatedBeforeKey;
       this.skipIgnorable();
       const hasColon = this.peek() === ":";
       if (hasColon) this.position++;
@@ -225,9 +231,11 @@ class JsonRepairParser {
       let value: string;
       const next = this.peek();
       if (next === undefined || next === "," || next === "}" || next === "]") {
-        // A present colon with no value, or a truncated `key:`, is best
-        // represented by null rather than dropping the key entirely.
-        if (!hasColon) throw this.syntaxError("Expected ':' after object key");
+        // A present colon with no value, or a truncated `key:` or `key`, is
+        // best represented by null rather than dropping the key entirely.
+        if (!hasColon && next !== undefined && !truncatedKey) {
+          throw this.syntaxError("Expected ':' after object key");
+        }
         value = "null";
       } else if (!hasColon && !this.canStartValueAt(this.position) && !this.startsEscapedString()) {
         throw this.syntaxError("Expected ':' after object key");

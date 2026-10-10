@@ -880,6 +880,25 @@ describe("prose and truncation around the answer", () => {
     expect(extractJson('Use f{x for that. Here: {"a": [1, 2')).toEqual({ a: [1, 2] });
   });
 
+  it("repairs output cut off inside an object key", () => {
+    expect(extractJson('<result>{"a": 1, "b')).toEqual({ a: 1, b: null });
+  });
+
+  it("does not mistake a stray bracket before the answer for truncated output", () => {
+    expect(extractJson('Note [\n{"a":1}\nThanks')).toEqual({ a: 1 });
+    expect(extractJson('see [ [\n{"a":1}\nok')).toEqual({ a: 1 });
+    expect(extractJson("Ref [1.Hi\n[2]\n")).toEqual([2]);
+    expect(extractJson("Set {1 or\n[2]\n")).toEqual([2]);
+    // A string cannot span lines, so `['hc` is prose with a stray quote.
+    expect(extractJson("x ['hc\n[]\n")).toEqual([]);
+  });
+
+  it("keeps empty arrays and number lists ahead of bracketed prose", () => {
+    expect(extractJson("- [ ] task\n[]")).toEqual([]);
+    expect(extractJson("[Thinking]\n[-5, 8]")).toEqual([-5, 8]);
+    expect(extractJson("Answer: [true, false]")).toEqual([true, false]);
+  });
+
   it("does not invent a candidate from a lone trailing brace", () => {
     expect(extractJsonCandidates("Here: {")).toEqual([]);
   });

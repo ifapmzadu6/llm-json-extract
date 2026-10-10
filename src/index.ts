@@ -141,9 +141,12 @@ export function extractJsonCandidates(text: string, options: ExtractOptions = {}
   // Bracketed prose (`[1]` citations, `[Thinking]`, Markdown links) is valid
   // or repairable JSON too, so it only gets a turn after real-looking data.
   if (tryBareJson) {
-    const bare = findAllBareJson(text);
-    for (const b of bare) if (!isBracketedProse(b)) push(b);
-    for (const b of bare) if (isBracketedProse(b)) push(b);
+    const prose: string[] = [];
+    for (const b of findAllBareJson(text)) {
+      if (isBracketedProse(b)) prose.push(b);
+      else push(b);
+    }
+    for (const b of prose) push(b);
   }
 
   return candidates;
@@ -337,14 +340,31 @@ export function extractJsonWith<T>(
 
 // ---------- internals ----------
 
+/**
+ * Arrays that are probably prose rather than data: `[Thinking]`, Markdown link
+ * text, a `[1]` citation, or a `[ ]` checkbox. Anything with quotes, colons,
+ * or nested containers counts as data, as do `[]` and plain number lists.
+ */
 function isBracketedProse(candidate: string): boolean {
-  return candidate[0] === "[" && !/["\u201c\u201d:{[]/.test(candidate.slice(1));
+  if (candidate[0] !== "[" || /["\u201c\u201d:{[]/.test(candidate.slice(1))) return false;
+  const inner = candidate.slice(1, -1);
+  return (
+    /^\s+$/.test(inner) ||
+    /^\s*\d{1,3}\s*$/.test(inner) ||
+    inner
+      .split(/[^A-Za-z]+/)
+      .some((word) => word !== "" && word !== "true" && word !== "false" && word !== "null")
+  );
 }
 
-/** The complete container a body starts with, if more text follows it. */
+/** The complete container a body starts with, if prose follows it. */
 function leadingContainer(body: string): string | null {
   const trimmed = body.trim();
   if (trimmed[0] !== "{" && trimmed[0] !== "[") return null;
+  // A body ending in a closer is a whole container (or NDJSON); skip the
+  // second scan of what is usually the happy path.
+  const last = trimmed[trimmed.length - 1];
+  if (last === "}" || last === "]") return null;
   const end = findBalancedEnd(trimmed, 0);
   if (end === null || end === trimmed.length - 1) return null;
   return trimmed.slice(0, end + 1);
@@ -603,7 +623,7 @@ function stepScan(
 
 function findAllBareJson(text: string): string[] {
   const { spans, openStarts } = findClosedBareJson(text, scanBareJson(text, true));
-  return withTruncatedTail(spans, truncatedTail(text, openStarts)).map((span) =>
+  return withTruncatedTail(spans, truncatedTail(text, openStarts, spans)).map((span) =>
     text.slice(span.start, span.end + 1),
   );
 }
@@ -611,20 +631,78 @@ function findAllBareJson(text: string): string[] {
 /**
  * A container still open at the end of the text, e.g. output cut off by a
  * token limit. Uses the outermost open bracket that looks like the start of
- * JSON data, so a stray `{` in earlier prose does not swallow the answer.
+ * JSON data, so a stray `{` or `[` in earlier prose does not swallow the answer.
  */
-function truncatedTail(text: string, openStarts: readonly number[]): JsonSpan | null {
+function truncatedTail(
+  text: string,
+  openStarts: readonly number[],
+  closed: readonly JsonSpan[],
+): JsonSpan | null {
   for (const start of openStarts) {
-    if (JSON_START.test(text.slice(start + 1, start + 256))) {
-      return { start, end: text.length - 1 };
+    if (!looksLikeJsonStart(text, start)) continue;
+    // `see [\n{...}\nThanks` is prose around one complete container, not a
+    // truncated array: only whitespace or other open brackets precede the
+    // first child, and no `,` follows it to continue the container. (A cut
+    // right after the first child, `[{...}`, is ambiguous and reads as prose.)
+    const child = closed.find((span) => span.start > start);
+    if (
+      child !== undefined &&
+      /^[\s[{]*$/.test(text.slice(start + 1, child.start)) &&
+      !text
+        .slice(child.end + 1)
+        .trimStart()
+        .startsWith(",")
+    ) {
+      continue;
     }
+    return { start, end: text.length - 1 };
   }
   return null;
 }
 
-// After the opening bracket: a string, a nested container, a number, a
-// literal, or an unquoted `key:`.
-const JSON_START = /^\s*(?:["'\u201c\u2018{[\d-]|(?:true|false|null)\b|[A-Za-z_$][\w$-]*\s*:)/;
+/**
+ * Whether the bracket at `start` opens JSON data: objects start with a key (a
+ * quoted string or an unquoted `key:`) or are empty, arrays start with a value. Nested openers
+ * are followed, so `[{o!` or a lone trailing `[{` is rejected.
+ */
+function looksLikeJsonStart(text: string, start: number): boolean {
+  let index = start;
+  for (let depth = 0; depth < 64; depth++) {
+    const opener = text[index];
+    const next = skipWhitespace(text, index + 1);
+    const head = text.slice(next, next + 128);
+    if (opener === "{") return OBJECT_KEY_START.test(head) && isSingleLineString(text, next);
+    if (text[next] !== "[" && text[next] !== "{") {
+      return ARRAY_VALUE_START.test(head) && isSingleLineString(text, next);
+    }
+    index = next;
+  }
+  return false;
+}
+
+/**
+ * A quoted value at `start` must close (or the text end) before a newline:
+ * JSON strings cannot contain raw newlines, so `['hc\n…` is prose with a
+ * stray quote rather than a truncated string. Non-quotes pass trivially.
+ */
+function isSingleLineString(text: string, start: number): boolean {
+  const opening = text[start];
+  if (opening === undefined || !(DOUBLE_QUOTES.has(opening) || SINGLE_QUOTES.has(opening))) {
+    return true;
+  }
+  const closing = closingQuotesFor(opening);
+  for (let i = start + 1; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "\\") i++;
+    else if (ch === "\n" || ch === "\r") return false;
+    else if (ch !== undefined && closing.has(ch)) return true;
+  }
+  return true;
+}
+
+const OBJECT_KEY_START = /^(?:["'\u201c\u2018}]|[A-Za-z_$][\w$-]*\s*:)/;
+const ARRAY_VALUE_START =
+  /^(?:["'\u201c\u2018\]]|-?\d+(?:\.\d*)?(?:[eE][+-]?\d*)?\s*(?:[,\]]|$)|(?:true|false|null)\b|(?:t(?:r(?:ue?)?)?|f(?:a(?:l(?:se?)?)?)?|n(?:u(?:ll?)?)?)$)/;
 
 /** Insert the truncated span ahead of the closed children it contains. */
 function withTruncatedTail(spans: JsonSpan[], truncated: JsonSpan | null): JsonSpan[] {
