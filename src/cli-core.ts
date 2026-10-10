@@ -22,6 +22,7 @@ export interface CliArgs {
   fence: boolean;
   bare: boolean;
   repair: boolean;
+  allowTruncated: boolean;
   tags: string[];
   /** Input file path, `"-"` for stdin, or `null` when no positional was given. */
   file: string | null;
@@ -39,6 +40,8 @@ Options:
   --no-fence        Disable the \`\`\`json / \`\`\` code-fence fallback.
   --no-bare         Disable the bare {...} / [...] fallback.
   --no-repair       Disable the built-in repair before parsing.
+  --allow-truncated Repair and print JSON that was cut off mid-answer (for
+                    example by a token limit) instead of failing.
   -r, --raw         Print the preferred candidate as-is, without parsing
                     or repairing it.
   -p, --pretty      Pretty-print the parsed JSON (2-space indent).
@@ -47,7 +50,7 @@ Options:
 
 Exit codes:
   0  success
-  1  no JSON-like content found, or nothing parsed
+  1  no JSON-like content found, nothing parsed, or the answer was cut off
   2  usage error
 
 Examples:
@@ -66,6 +69,7 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
     fence: true,
     bare: true,
     repair: true,
+    allowTruncated: false,
     tags: [],
     file: null,
   };
@@ -88,6 +92,8 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
       args.bare = false;
     } else if (arg === "--no-repair") {
       args.repair = false;
+    } else if (arg === "--allow-truncated") {
+      args.allowTruncated = true;
     } else if (arg === "-t" || arg === "--tag") {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith("-")) {
@@ -124,6 +130,7 @@ export function extractForCli(text: string, args: CliArgs): CliResult {
     tryCodeFence: args.fence,
     tryBareJson: args.bare,
     repair: args.repair,
+    allowTruncated: args.allowTruncated,
   };
   if (args.tags.length > 0) options.tags = args.tags;
 
@@ -144,7 +151,11 @@ export function extractForCli(text: string, args: CliArgs): CliResult {
     };
   } catch (err) {
     if (err instanceof LlmJsonExtractError) {
-      return { exitCode: 1, stdout: null, stderr: `error: ${err.message} (stage: ${err.stage})` };
+      const message = err.truncated
+        ? "the output appears to be cut off before the JSON was complete; " +
+          "pass --allow-truncated to repair and print it anyway"
+        : `${err.message} (stage: ${err.stage})`;
+      return { exitCode: 1, stdout: null, stderr: `error: ${message}` };
     }
     throw err;
   }

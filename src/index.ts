@@ -55,6 +55,24 @@ export interface ExtractOptions {
    * @default true
    */
   repair?: boolean;
+
+  /**
+   * What to do when the answer was cut off mid-JSON (for example by a token
+   * limit): the answer tag or bare JSON runs to the end of the text with
+   * strings or brackets still open.
+   *  - `false` → `extractJson` / `extractJsonWith` throw an
+   *    {@link LlmJsonExtractError} with `truncated: true`, so you can retry
+   *    with a larger limit instead of using partial data. An earlier example
+   *    echoed from your prompt is not returned in its place.
+   *  - `true`  → repair closes the open strings and containers and the
+   *    partial JSON is returned (or validated) like any other candidate.
+   *
+   * A missing closing tag alone is not truncation: with a stop sequence such
+   * as `</result>`, complete JSON before it is used as usual.
+   *
+   * @default false
+   */
+  allowTruncated?: boolean;
 }
 
 const DEFAULT_TAGS = ["result", "json", "output"];
@@ -63,6 +81,12 @@ export class LlmJsonExtractError extends Error {
   readonly stage: "extract" | "parse" | "validate";
   readonly raw: string;
   readonly extracted: string | null;
+  /**
+   * The answer was cut off mid-JSON and `allowTruncated` was not set.
+   * `extracted` holds the partial JSON. Retrying with a larger output limit
+   * usually helps more than re-prompting.
+   */
+  readonly truncated: boolean;
 
   constructor(opts: {
     message: string;
@@ -70,12 +94,14 @@ export class LlmJsonExtractError extends Error {
     raw: string;
     extracted: string | null;
     cause?: unknown;
+    truncated?: boolean;
   }) {
     super(opts.message, opts.cause === undefined ? undefined : { cause: opts.cause });
     this.name = "LlmJsonExtractError";
     this.stage = opts.stage;
     this.raw = opts.raw;
     this.extracted = opts.extracted;
+    this.truncated = opts.truncated ?? false;
   }
 }
 
@@ -91,8 +117,10 @@ export class LlmJsonExtractError extends Error {
  *      (truncated output). Bracketed prose such as `[1]` or `[Thinking]`
  *      (an array with no quotes, colons, or nested containers) is tried last.
  *
- * A tag whose closing tag never appears (output cut off mid-answer) yields its
- * body up to the end of the text. When a tag or fence body starts with a
+ * A tag whose closing tag never appears yields its body up to the end of the
+ * text (a stop sequence, or output cut off mid-answer). Cut-off candidates
+ * are listed here regardless of `allowTruncated`; that option only affects
+ * {@link extractJson} and {@link extractJsonWith}. When a tag or fence body starts with a
  * complete container followed by more text, that container alone is added
  * right after the full body.
  *
@@ -100,26 +128,44 @@ export class LlmJsonExtractError extends Error {
  * to inspect or try parsing candidates yourself.
  */
 export function extractJsonCandidates(text: string, options: ExtractOptions = {}): string[] {
+  return collectCandidates(text, options).candidates.map((candidate) => candidate.text);
+}
+
+interface Candidate {
+  text: string;
+  /** Cut off mid-JSON, or a fragment inside such a cut-off container. */
+  truncated: boolean;
+}
+
+function collectCandidates(
+  text: string,
+  options: ExtractOptions,
+): { candidates: Candidate[]; cutOff: Candidate | null } {
   const tags = options.tags ?? DEFAULT_TAGS;
   const pickLast = options.pickLast ?? true;
   const tryCodeFence = options.tryCodeFence ?? true;
   const tryBareJson = options.tryBareJson ?? true;
 
-  const candidates: string[] = [];
+  const candidates: Candidate[] = [];
   const seen = new Set<string>();
-  const push = (s: string | null | undefined): void => {
-    if (s === null || s === undefined) return;
+  const push = (s: string | null | undefined, truncated = false): Candidate | null => {
+    if (s === null || s === undefined) return null;
     const trimmed = s.trim();
-    if (trimmed.length === 0 || seen.has(trimmed)) return;
+    if (trimmed.length === 0 || seen.has(trimmed)) return null;
     seen.add(trimmed);
-    candidates.push(trimmed);
+    const candidate = { text: trimmed, truncated };
+    candidates.push(candidate);
+    return candidate;
   };
   // `{...}\nHope this helps!` inside a tag: keep the full body first (it may be
   // NDJSON), then offer the leading container on its own.
-  const pushWithLeadingContainer = (body: string): void => {
-    push(body);
+  const pushWithLeadingContainer = (body: string, truncated = false): Candidate | null => {
+    const candidate = push(body, truncated);
     push(leadingContainer(body));
+    return candidate;
   };
+  // The answer that was cut off, when it is the one we would have used.
+  let cutOff: Candidate | null = null;
 
   // Strategy 1: all tag matches, with the preferred one first.
   const tagMatches = findAllTagMatches(text, tags);
@@ -128,8 +174,11 @@ export function extractJsonCandidates(text: string, options: ExtractOptions = {}
     const preferred = pickLast
       ? [...tagMatches].sort((a, b) => a.end - b.end).pop()
       : sortedByDocPos[0];
-    if (preferred !== undefined) pushWithLeadingContainer(preferred.body);
-    for (const m of sortedByDocPos) pushWithLeadingContainer(m.body);
+    if (preferred !== undefined) {
+      const candidate = pushWithLeadingContainer(preferred.body, preferred.truncated);
+      if (preferred.truncated) cutOff = candidate;
+    }
+    for (const m of sortedByDocPos) pushWithLeadingContainer(m.body, m.truncated);
   }
 
   // Strategy 2: code fences in document order.
@@ -141,15 +190,57 @@ export function extractJsonCandidates(text: string, options: ExtractOptions = {}
   // Bracketed prose (`[1]` citations, `[Thinking]`, Markdown links) is valid
   // or repairable JSON too, so it only gets a turn after real-looking data.
   if (tryBareJson) {
-    const prose: string[] = [];
+    // A cut-off bare container is the answer only when nothing explicit (a
+    // tag or fence) came first; after one, it is trailing chatter.
+    const explicit = candidates.length > 0;
+    const prose: BareCandidate[] = [];
     for (const b of findAllBareJson(text)) {
-      if (isBracketedProse(b)) prose.push(b);
-      else push(b);
+      if (isBracketedProse(b.text)) {
+        prose.push(b);
+        continue;
+      }
+      const candidate = push(b.text, b.truncated);
+      if (b.tail && !explicit && cutOff === null) cutOff = candidate;
     }
-    for (const b of prose) push(b);
+    for (const b of prose) push(b.text, b.truncated);
   }
 
-  return candidates;
+  return { candidates, cutOff };
+}
+
+/**
+ * Candidates `extractJson` and `extractJsonWith` may use. Unless
+ * `allowTruncated` is set, a cut-off answer throws rather than letting an
+ * earlier candidate (such as an echoed example) or a fragment stand in for it.
+ */
+function usableCandidates(text: string, options: ExtractOptions): string[] {
+  const allowTruncated = options.allowTruncated ?? false;
+  const { candidates, cutOff } = collectCandidates(text, options);
+  if (!allowTruncated && cutOff !== null) throw truncatedError(text, cutOff.text);
+  const usable = candidates.filter((candidate) => allowTruncated || !candidate.truncated);
+  if (usable.length === 0) {
+    const truncated = candidates.find((candidate) => candidate.truncated);
+    if (truncated !== undefined) throw truncatedError(text, truncated.text);
+    throw new LlmJsonExtractError({
+      message: "No JSON-like content found in input",
+      stage: "extract",
+      raw: text,
+      extracted: null,
+    });
+  }
+  return usable.map((candidate) => candidate.text);
+}
+
+function truncatedError(text: string, extracted: string): LlmJsonExtractError {
+  return new LlmJsonExtractError({
+    message:
+      "The output appears to be cut off before the JSON was complete (for example by a " +
+      "token limit). Pass allowTruncated: true to repair and use the partial JSON.",
+    stage: "extract",
+    raw: text,
+    extracted,
+    truncated: true,
+  });
 }
 
 /**
@@ -169,19 +260,12 @@ export function extractJsonString(text: string, options: ExtractOptions = {}): s
  *
  * Each candidate from {@link extractJsonCandidates} is tried in order;
  * the first one that successfully parses (after optional repair)
- * is returned. Throws {@link LlmJsonExtractError} only if no candidate
- * parses, or none was found.
+ * is returned. Throws {@link LlmJsonExtractError} if no candidate
+ * parses, none was found, or the answer was cut off and `allowTruncated`
+ * is not set.
  */
 export function extractJson(text: string, options: ExtractOptions = {}): unknown {
-  const candidates = extractJsonCandidates(text, options);
-  if (candidates.length === 0) {
-    throw new LlmJsonExtractError({
-      message: "No JSON-like content found in input",
-      stage: "extract",
-      raw: text,
-      extracted: null,
-    });
-  }
+  const candidates = usableCandidates(text, options);
   const repair = options.repair ?? true;
   // Two-pass: prefer object/array results over primitives, because repair can
   // turn bare words ("nope") into JSON strings, which would mask a
@@ -264,15 +348,7 @@ export function extractJsonWith<T>(
 ): T {
   const validate: (value: unknown) => T =
     typeof validator === "function" ? validator : (x) => validator.parse(x);
-  const candidates = extractJsonCandidates(text, options);
-  if (candidates.length === 0) {
-    throw new LlmJsonExtractError({
-      message: "No JSON-like content found in input",
-      stage: "extract",
-      raw: text,
-      extracted: null,
-    });
-  }
+  const candidates = usableCandidates(text, options);
   const repair = options.repair ?? true;
   // Two passes: try structured (object/array) candidates first, then primitives.
   // Validators that reject primitives won't be tricked by repair turning
@@ -342,20 +418,30 @@ export function extractJsonWith<T>(
 
 /**
  * Arrays that are probably prose rather than data: `[Thinking]`, Markdown link
- * text, a `[1]` citation, or a `[ ]` checkbox. Anything with quotes, colons,
- * or nested containers counts as data, as do `[]` and plain number lists.
+ * text, a `[1]` citation, or a `[ ]` checkbox. Anything with double quotes,
+ * colons, or nested containers counts as data, as do `[]`, number lists,
+ * literal lists, and Python-style `['a', 'b']` (a quote opening an item).
  */
 function isBracketedProse(candidate: string): boolean {
   if (candidate[0] !== "[" || /["\u201c\u201d:{[]/.test(candidate.slice(1))) return false;
   const inner = candidate.slice(1, -1);
+  if (/(?:^|,)\s*['`\u00b4\u2018\u2019]/.test(inner)) return false;
   return (
     /^\s+$/.test(inner) ||
     /^\s*\d{1,3}\s*$/.test(inner) ||
-    inner
-      .split(/[^A-Za-z]+/)
-      .some((word) => word !== "" && word !== "true" && word !== "false" && word !== "null")
+    inner.split(/[^A-Za-z]+/).some((word) => word !== "" && !LITERAL_WORDS.has(word))
   );
 }
+
+const LITERAL_WORDS: ReadonlySet<string> = new Set([
+  "true",
+  "false",
+  "null",
+  "True",
+  "False",
+  "None",
+  "undefined",
+]);
 
 /** The complete container a body starts with, if prose follows it. */
 function leadingContainer(body: string): string | null {
@@ -372,6 +458,8 @@ function leadingContainer(body: string): string | null {
 
 interface TagMatch {
   body: string;
+  /** No closing tag, and the JSON in the body stops mid-value. */
+  truncated: boolean;
   start: number; // index of opening `<`
   end: number; // index just past closing `>`
 }
@@ -389,20 +477,18 @@ function findAllTagMatches(text: string, tags: readonly string[]): TagMatch[] {
       const bodyStart = start + m[0].length;
       const close = findTagClose(text, closeRe, closeAt, bodyStart);
       if (close === null) {
-        // No closing tag follows, so the output was most likely cut off. Take
-        // the last opening tag's body through the end of the text; repair
-        // can close truncated strings and containers.
+        // No closing tag follows: a stop sequence ate it, or the output was
+        // cut off. Take the last opening tag's body through the end of the
+        // text; repair can close truncated strings and containers.
         let last = m;
         for (let next = openRe.exec(text); next !== null; next = openRe.exec(text)) last = next;
-        out.push({
-          body: text.slice(last.index + last[0].length),
-          start: last.index,
-          end: text.length,
-        });
+        const body = text.slice(last.index + last[0].length);
+        out.push({ body, truncated: isCutOffBody(body), start: last.index, end: text.length });
         break;
       }
       out.push({
         body: text.slice(bodyStart, close.start),
+        truncated: false,
         start,
         end: close.end,
       });
@@ -411,6 +497,25 @@ function findAllTagMatches(text: string, tags: readonly string[]): TagMatch[] {
     }
   }
   return out;
+}
+
+/**
+ * Whether an unclosed tag body holds JSON that stops mid-value, as opposed to
+ * complete JSON whose closing tag was consumed by a stop sequence.
+ */
+function isCutOffBody(body: string): boolean {
+  let start = skipWhitespace(body, 0);
+  if (body.startsWith("```", start)) {
+    const newline = body.indexOf("\n", start);
+    if (newline === -1) return false;
+    start = skipWhitespace(body, newline + 1);
+  }
+  const first = body[start];
+  if (first === "{" || first === "[") {
+    return looksLikeJsonStart(body, start) && findBalancedEnd(body, start) === null;
+  }
+  if (first === '"') return findJsonStringEnd(body, start) === null;
+  return false;
 }
 
 function findTagClose(
@@ -621,11 +726,22 @@ function stepScan(
   return { consumed: false, skipNext: false };
 }
 
-function findAllBareJson(text: string): string[] {
+interface BareCandidate {
+  text: string;
+  /** The cut-off container itself, or a fragment inside it. */
+  truncated: boolean;
+  /** The cut-off container itself. */
+  tail: boolean;
+}
+
+function findAllBareJson(text: string): BareCandidate[] {
   const { spans, openStarts } = findClosedBareJson(text, scanBareJson(text, true));
-  return withTruncatedTail(spans, truncatedTail(text, openStarts, spans)).map((span) =>
-    text.slice(span.start, span.end + 1),
-  );
+  const tail = truncatedTail(text, openStarts, spans);
+  return withTruncatedTail(spans, tail).map((span) => ({
+    text: text.slice(span.start, span.end + 1),
+    truncated: tail !== null && span.start >= tail.start,
+    tail: span === tail,
+  }));
 }
 
 /**

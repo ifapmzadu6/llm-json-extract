@@ -80,7 +80,9 @@ describe("properties", () => {
           // read as prose around that child (see truncatedTail).
           fc.pre(!/^[[{]+$/.test(cut.slice(0, 2)) || !/[}\]]$/.test(cut));
           const text = wrap(cut);
-          expect(Array.isArray(extractJson(text))).toBe(Array.isArray(value));
+          expect(Array.isArray(extractJson(text, { allowTruncated: true }))).toBe(
+            Array.isArray(value),
+          );
         },
       ),
       { numRuns: 1_000 },

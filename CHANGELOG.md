@@ -13,16 +13,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer comes back wrapped in an array with the prose. Newline-delimited JSON
   is still joined, but only when every line is an object or array, and a
   body's leading object/array is now also offered as a candidate on its own.
-- Bracketed prose such as `[1]` citations, `[Thinking]`, or Markdown link text
-  no longer wins over a later JSON object in bare-JSON fallback; such arrays
-  (no quotes, colons, or nested containers) are now tried last.
-- Output cut off mid-answer is now recovered: an opening tag with no closing
-  tag yields its body through the end of the text, and a bare object/array
-  still open at the end of the text becomes a candidate (tried before its
-  complete children), so the repairer can close it. A stray `[` or `{` in
-  earlier prose is not mistaken for the start of truncated data. A key cut
-  off at the end of the input (`{"a": 1, "b`) now repairs to `"b": null`, as
-  in jsonrepair, including when its closing quote is missing.
+- Bracketed prose such as `[1]` citations, `[Thinking]`, Markdown link text,
+  or `[ ]` checkboxes no longer wins over real data in bare-JSON fallback;
+  such arrays are now tried last. Arrays with quoted items (including
+  Python-style `['a', 'b']`), numbers, literals, or nested containers still
+  count as data.
+- Output cut off mid-answer (for example by a token limit) is now detected
+  instead of being silently replaced: previously an unclosed answer tag was
+  ignored, so an example echoed earlier in the output, or a complete fragment
+  of the cut-off answer, could be returned as if it were the answer. A stray
+  `[` or `{` in earlier prose is not mistaken for cut-off data, and complete
+  JSON whose closing tag was consumed by a stop sequence is used as before.
+- A key cut off at the end of the input (`{"a": 1, "b`) now repairs to
+  `"b": null`, as in jsonrepair, including when its closing quote is missing.
 - Restore jsonrepair 3.15 quote behavior: a string opened with an ASCII `'` or
   `"` only closes with the same quote, so backticks and smart quotes inside it
   are content (``{'cmd': 'run `ls`'}``). A quote followed by a word that runs
@@ -41,6 +44,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `allowTruncated` option (default `false`) and CLI `--allow-truncated` flag.
+  By default, `extractJson` and `extractJsonWith` throw an
+  `LlmJsonExtractError` with the new `truncated: true` property when the
+  answer was cut off mid-JSON, so callers can retry with a larger output
+  limit. With `allowTruncated: true`, the cut-off JSON is repaired (open
+  strings and containers closed) and returned. `extractJsonCandidates` and
+  `extractJsonString` list cut-off candidates either way.
 - Property-based tests (fast-check): valid JSON surrounded by prose, tags, or
   fences round-trips unchanged; truncated output keeps its top-level shape;
   and arbitrary input only ever throws `LlmJsonExtractError`.

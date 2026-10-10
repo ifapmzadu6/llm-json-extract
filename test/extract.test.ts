@@ -861,27 +861,78 @@ describe("prose and truncation around the answer", () => {
     expect(extractJson('Visit {see http://x.com} then {"a":1}')).toEqual({ a: 1 });
   });
 
-  it("repairs a tag body cut off before its closing tag", () => {
-    expect(extractJson('Sure. <result>{"a": [1, 2, {"b": "hel')).toEqual({
+  const allowTruncated = { allowTruncated: true };
+
+  it("repairs a tag body cut off before its closing tag when allowed", () => {
+    expect(extractJson('Sure. <result>{"a": [1, 2, {"b": "hel', allowTruncated)).toEqual({
       a: [1, 2, { b: "hel" }],
     });
     // The truncated final answer wins over an earlier complete example.
-    expect(extractJson('<result>{"x":0}</result> now: <result>{"x":1, "y": [')).toEqual({
-      x: 1,
-      y: [],
+    expect(
+      extractJson('<result>{"x":0}</result> now: <result>{"x":1, "y": [', allowTruncated),
+    ).toEqual({ x: 1, y: [] });
+  });
+
+  it("repairs bare JSON cut off at the end of the text when allowed", () => {
+    expect(extractJson('Here: {"a": [1, 2, {"b": "hel', allowTruncated)).toEqual({
+      a: [1, 2, { b: "hel" }],
+    });
+    // The truncated parent is tried before its complete children.
+    expect(extractJson('Result: [{"a":1}, {"b":', allowTruncated)).toEqual([{ a: 1 }, { b: null }]);
+    // A stray brace in earlier prose does not swallow the answer.
+    expect(extractJson('Use f{x for that. Here: {"a": [1, 2', allowTruncated)).toEqual({
+      a: [1, 2],
     });
   });
 
-  it("repairs bare JSON cut off at the end of the text", () => {
-    expect(extractJson('Here: {"a": [1, 2, {"b": "hel')).toEqual({ a: [1, 2, { b: "hel" }] });
-    // The truncated parent is tried before its complete children.
-    expect(extractJson('Result: [{"a":1}, {"b":')).toEqual([{ a: 1 }, { b: null }]);
-    // A stray brace in earlier prose does not swallow the answer.
-    expect(extractJson('Use f{x for that. Here: {"a": [1, 2')).toEqual({ a: [1, 2] });
+  it("repairs output cut off inside an object key when allowed", () => {
+    expect(extractJson('<result>{"a": 1, "b', allowTruncated)).toEqual({ a: 1, b: null });
   });
 
-  it("repairs output cut off inside an object key", () => {
-    expect(extractJson('<result>{"a": 1, "b')).toEqual({ a: 1, b: null });
+  it.each([
+    [
+      "a tag body",
+      'Sure. <result>{"score": 8, "reason": "The essay is',
+      '{"score": 8, "reason": "The essay is',
+    ],
+    ["bare JSON", 'Here: {"a": {"b": 1}, "c": [', '{"a": {"b": 1}, "c": ['],
+    ["a string answer", '<result>"The answer is', '"The answer is'],
+  ])("throws instead of returning %s cut off mid-answer by default", (_, text, extracted) => {
+    for (const run of [() => extractJson(text), () => extractJsonWith(text, (x) => x)]) {
+      expect(run).toThrow(
+        expect.objectContaining({ stage: "extract", truncated: true, extracted }),
+      );
+    }
+    // Inspection APIs still show what is there.
+    expect(extractJsonCandidates(text)).toContain(extracted);
+  });
+
+  it("does not fall back to an echoed example when the real answer was cut off", () => {
+    const Score = z.object({ score: z.number(), reason: z.string() });
+    const text =
+      'Format: <result>{"score": 0, "reason": "..."}</result>\n' +
+      'Answer: <result>{"score": 8, "reason": "The essay is strong because it argu';
+    expect(() => extractJsonWith(text, Score)).toThrow(
+      expect.objectContaining({ truncated: true }),
+    );
+    expect(extractJsonWith(text, Score, allowTruncated)).toEqual({
+      score: 8,
+      reason: "The essay is strong because it argu",
+    });
+  });
+
+  it("uses complete JSON whose closing tag was eaten by a stop sequence", () => {
+    expect(extractJson('Thinking...\n<result>\n{"a": [1, 2]}\n')).toEqual({ a: [1, 2] });
+    expect(extractJson("<result>```json\n[1, 2]\n")).toEqual([1, 2]);
+    expect(extractJson("<result>42")).toBe(42);
+  });
+
+  it("ignores cut-off bare chatter after a complete tagged answer", () => {
+    expect(extractJson('<result>{"a":1}</result>\nNext I could add [1, 2')).toEqual({ a: 1 });
+  });
+
+  it("does not treat a prose mention of an unclosed tag as truncation", () => {
+    expect(extractJson('I will use <result> tags.\n```json\n{"a":1}\n```')).toEqual({ a: 1 });
   });
 
   it("does not mistake a stray bracket before the answer for truncated output", () => {
@@ -897,6 +948,10 @@ describe("prose and truncation around the answer", () => {
     expect(extractJson("- [ ] task\n[]")).toEqual([]);
     expect(extractJson("[Thinking]\n[-5, 8]")).toEqual([-5, 8]);
     expect(extractJson("Answer: [true, false]")).toEqual([true, false]);
+    expect(extractJson("As noted [1]: ['apple', 'banana']")).toEqual(["apple", "banana"]);
+    expect(extractJson("[Thinking] done\n[1, None, True]")).toEqual([1, null, true]);
+    // An apostrophe inside a word is still prose.
+    expect(extractJsonCandidates('[Here\'s a draft] {"a":1}')[0]).toBe('{"a":1}');
   });
 
   it("does not invent a candidate from a lone trailing brace", () => {
