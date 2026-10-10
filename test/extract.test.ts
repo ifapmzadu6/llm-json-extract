@@ -522,7 +522,7 @@ describe("edge cases", () => {
     { name: "right single", open: "’", close: "’" },
     { name: "smart double", open: "“", close: "”" },
     { name: "right double", open: "”", close: "”" },
-    { name: "mixed single family", open: "'", close: "’" },
+    { name: "mixed single family", open: "‘", close: "'" },
     { name: "mixed double family", open: "“", close: '"' },
   ])("preserves brackets and comment markers inside $name quoted bare JSON", ({ open, close }) => {
     const value = "a}b]c{d[e https://example.com /* literal */";
@@ -557,8 +557,10 @@ describe("edge cases", () => {
 
   it("does not start strings at apostrophes in bracketed prose", () => {
     const text = `[Here's a draft] then {"ok":true}`;
-    expect(extractJsonCandidates(text)).toEqual(["[Here's a draft]", '{"ok":true}']);
+    // Bracketed prose is still a candidate, but only after real-looking data.
+    expect(extractJsonCandidates(text)).toEqual(['{"ok":true}', "[Here's a draft]"]);
     expect(extractJson(text, { repair: false })).toEqual({ ok: true });
+    expect(extractJson(text)).toEqual({ ok: true });
   });
 
   it.each([
@@ -827,5 +829,139 @@ describe("extractJsonCandidates", () => {
 
   it("returns empty array when nothing JSON-like", () => {
     expect(extractJsonCandidates("just prose")).toEqual([]);
+  });
+});
+
+describe("prose and truncation around the answer", () => {
+  it.each([
+    ["a closing line inside a tag", '<result>\n{"a":1}\nHope this helps!\n</result>'],
+    ["a closing line inside a fence", '```json\n{"a":1}\nLet me know!\n```'],
+  ])("does not wrap the answer in an array when followed by %s", (_, text) => {
+    expect(extractJson(text)).toEqual({ a: 1 });
+    expect(extractJson(text, { tryBareJson: false })).toEqual({ a: 1 });
+  });
+
+  it("still joins newline-delimited containers", () => {
+    expect(extractJson('<result>{"id":1}\n{"id":2}</result>')).toEqual([{ id: 1 }, { id: 2 }]);
+  });
+
+  it.each([
+    'Per the docs [1], here you go: {"a":1}',
+    '[Thinking] Let me answer.\n{"a":1}',
+    'See [the docs](https://example.com). {"a":1}',
+  ])("prefers data over earlier bracketed prose: %s", (text) => {
+    expect(extractJson(text)).toEqual({ a: 1 });
+  });
+
+  it("still returns a bare array answer when there is nothing else", () => {
+    expect(extractJson("Answer: [3, 5, 7]")).toEqual([3, 5, 7]);
+  });
+
+  it("does not let a URL in braced prose hide later JSON", () => {
+    expect(extractJson('Visit {see http://x.com} then {"a":1}')).toEqual({ a: 1 });
+  });
+
+  const allowTruncated = { allowTruncated: true };
+
+  it("repairs a tag body cut off before its closing tag when allowed", () => {
+    expect(extractJson('Sure. <result>{"a": [1, 2, {"b": "hel', allowTruncated)).toEqual({
+      a: [1, 2, { b: "hel" }],
+    });
+    // The truncated final answer wins over an earlier complete example.
+    expect(
+      extractJson('<result>{"x":0}</result> now: <result>{"x":1, "y": [', allowTruncated),
+    ).toEqual({ x: 1, y: [] });
+  });
+
+  it("repairs bare JSON cut off at the end of the text when allowed", () => {
+    expect(extractJson('Here: {"a": [1, 2, {"b": "hel', allowTruncated)).toEqual({
+      a: [1, 2, { b: "hel" }],
+    });
+    // The truncated parent is tried before its complete children.
+    expect(extractJson('Result: [{"a":1}, {"b":', allowTruncated)).toEqual([{ a: 1 }, { b: null }]);
+    // A stray brace in earlier prose does not swallow the answer.
+    expect(extractJson('Use f{x for that. Here: {"a": [1, 2', allowTruncated)).toEqual({
+      a: [1, 2],
+    });
+  });
+
+  it("repairs output cut off inside an object key when allowed", () => {
+    expect(extractJson('<result>{"a": 1, "b', allowTruncated)).toEqual({ a: 1, b: null });
+  });
+
+  it.each([
+    [
+      "a tag body",
+      'Sure. <result>{"score": 8, "reason": "The essay is',
+      '{"score": 8, "reason": "The essay is',
+    ],
+    ["bare JSON", 'Here: {"a": {"b": 1}, "c": [', '{"a": {"b": 1}, "c": ['],
+    ["a string answer", '<result>"The answer is', '"The answer is'],
+  ])("throws instead of returning %s cut off mid-answer by default", (_, text, extracted) => {
+    for (const run of [() => extractJson(text), () => extractJsonWith(text, (x) => x)]) {
+      expect(run).toThrow(
+        expect.objectContaining({ stage: "extract", truncated: true, extracted }),
+      );
+    }
+    // Inspection APIs still show what is there.
+    expect(extractJsonCandidates(text)).toContain(extracted);
+  });
+
+  it("does not fall back to an echoed example when the real answer was cut off", () => {
+    const Score = z.object({ score: z.number(), reason: z.string() });
+    const text =
+      'Format: <result>{"score": 0, "reason": "..."}</result>\n' +
+      'Answer: <result>{"score": 8, "reason": "The essay is strong because it argu';
+    expect(() => extractJsonWith(text, Score)).toThrow(
+      expect.objectContaining({ truncated: true }),
+    );
+    expect(extractJsonWith(text, Score, allowTruncated)).toEqual({
+      score: 8,
+      reason: "The essay is strong because it argu",
+    });
+  });
+
+  it("uses complete JSON whose closing tag was eaten by a stop sequence", () => {
+    expect(extractJson('Thinking...\n<result>\n{"a": [1, 2]}\n')).toEqual({ a: [1, 2] });
+    expect(extractJson("<result>```json\n[1, 2]\n")).toEqual([1, 2]);
+    expect(extractJson("<result>42")).toBe(42);
+  });
+
+  it("ignores cut-off bare chatter after a complete tagged answer", () => {
+    expect(extractJson('<result>{"a":1}</result>\nNext I could add [1, 2')).toEqual({ a: 1 });
+  });
+
+  it("does not treat a prose mention of an unclosed tag as truncation", () => {
+    expect(extractJson('I will use <result> tags.\n```json\n{"a":1}\n```')).toEqual({ a: 1 });
+  });
+
+  it("does not mistake a stray bracket before the answer for truncated output", () => {
+    expect(extractJson('Note [\n{"a":1}\nThanks')).toEqual({ a: 1 });
+    expect(extractJson('see [ [\n{"a":1}\nok')).toEqual({ a: 1 });
+    expect(extractJson("Ref [1.Hi\n[2]\n")).toEqual([2]);
+    expect(extractJson("Set {1 or\n[2]\n")).toEqual([2]);
+    // A string cannot span lines, so `['hc` is prose with a stray quote.
+    expect(extractJson("x ['hc\n[]\n")).toEqual([]);
+  });
+
+  it("keeps empty arrays and number lists ahead of bracketed prose", () => {
+    expect(extractJson("- [ ] task\n[]")).toEqual([]);
+    expect(extractJson("[Thinking]\n[-5, 8]")).toEqual([-5, 8]);
+    expect(extractJson("Answer: [true, false]")).toEqual([true, false]);
+    expect(extractJson("As noted [1]: ['apple', 'banana']")).toEqual(["apple", "banana"]);
+    expect(extractJson("[Thinking] done\n[1, None, True]")).toEqual([1, null, true]);
+    // An apostrophe inside a word is still prose.
+    expect(extractJsonCandidates('[Here\'s a draft] {"a":1}')[0]).toBe('{"a":1}');
+  });
+
+  it("does not invent a candidate from a lone trailing brace", () => {
+    expect(extractJsonCandidates("Here: {")).toEqual([]);
+  });
+
+  it("scans many unclosed tag bodies in linear time", () => {
+    const text = "<json>{</json>".repeat(20_000);
+    const start = performance.now();
+    extractJsonCandidates(text, { tryBareJson: false });
+    expect(performance.now() - start).toBeLessThan(1_000);
   });
 });

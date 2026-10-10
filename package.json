@@ -1,6 +1,6 @@
 {
   "name": "llm-json-extract",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Extract & validate JSON from messy LLM output. Designed for Claude / Codex CLI workflows where tool-use is unavailable. XML-tag aware, with multi-stage fallbacks and built-in repair.",
   "keywords": [
     "llm",
@@ -38,10 +38,16 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
-    }
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
@@ -53,7 +59,8 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "node scripts/build.mjs && tsc --emitDeclarationOnly --declarationMap false",
+    "build": "node scripts/build.mjs && tsc --emitDeclarationOnly --declarationMap false && node scripts/finalize-types.mjs",
+    "check:package": "attw --pack .",
     "test": "vitest run",
     "test:smoke": "node test/smoke.mjs",
     "test:watch": "vitest",
@@ -64,9 +71,11 @@
     "prepublishOnly": "npm run lint && npm run typecheck && npm test && npm run build"
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.5",
     "@biomejs/biome": "^2.5.3",
     "@types/node": "^26.1.1",
     "esbuild": "^0.28.1",
+    "fast-check": "^4.10.2",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10",
     "zod": "^4.4.3"

@@ -1,5 +1,18 @@
-import { DOUBLE_QUOTES, isWordCharacter, SINGLE_QUOTES } from "./quotes.js";
+import {
+  ASCII_DOUBLE_QUOTES,
+  ASCII_SINGLE_QUOTES,
+  closingQuotesFor,
+  DOUBLE_QUOTES,
+  isWordCharacter,
+  SINGLE_QUOTES,
+} from "./quotes.js";
 
+const QUOTE_FAMILY_INDEX: ReadonlyMap<ReadonlySet<string>, number> = new Map([
+  [ASCII_DOUBLE_QUOTES, 0],
+  [ASCII_SINGLE_QUOTES, 1],
+  [DOUBLE_QUOTES, 2],
+  [SINGLE_QUOTES, 3],
+]);
 const ESCAPE_CHARACTERS: Readonly<Record<string, string>> = {
   '"': '"',
   "'": "'",
@@ -81,6 +94,8 @@ export function isWordApostrophe(input: string, index: number): boolean {
 
 class JsonRepairParser {
   private pendingArraySplit = false;
+  /** Strings closed at end of input rather than by a quote (truncation). */
+  private unterminatedStrings = 0;
   private position = 0;
   private significantIndices: Uint32Array | undefined;
   private significantScanWork = 0;
@@ -93,6 +108,7 @@ class JsonRepairParser {
 
   private missingCloser(closer: string): void {
     if (this.requireCompleteDelimiters) throw this.syntaxError(`Missing closing ${closer}`);
+    if (closer === "quote") this.unterminatedStrings++;
   }
 
   repair(): string {
@@ -125,8 +141,14 @@ class JsonRepairParser {
     }
 
     // Retain useful support for newline-delimited JSON while keeping unrelated
-    // trailing prose an error.
-    while (!this.atEnd() && separator.sawNewline && this.canStartValueAt(this.position)) {
+    // trailing prose an error. Only containers qualify: otherwise a closing
+    // "Hope this helps!" line would silently wrap the answer in an array.
+    while (
+      !this.atEnd() &&
+      separator.sawNewline &&
+      isContainer(values[0]!) &&
+      (this.peek() === "{" || this.peek() === "[")
+    ) {
       values.push(this.parseValue());
       separator = this.skipIgnorable();
       if (this.peek() === ",") {
@@ -196,7 +218,10 @@ class JsonRepairParser {
       }
       if (this.skipEllipsis()) continue;
 
+      const unterminatedBeforeKey = this.unterminatedStrings;
       const key = this.parseObjectKey();
+      // A key missing its end quote was cut off, like a key at end of input.
+      const truncatedKey = this.unterminatedStrings > unterminatedBeforeKey;
       this.skipIgnorable();
       const hasColon = this.peek() === ":";
       if (hasColon) this.position++;
@@ -206,9 +231,11 @@ class JsonRepairParser {
       let value: string;
       const next = this.peek();
       if (next === undefined || next === "," || next === "}" || next === "]") {
-        // A present colon with no value, or a truncated `key:`, is best
-        // represented by null rather than dropping the key entirely.
-        if (!hasColon) throw this.syntaxError("Expected ':' after object key");
+        // A present colon with no value, or a truncated `key:` or `key`, is
+        // best represented by null rather than dropping the key entirely.
+        if (!hasColon && next !== undefined && !truncatedKey) {
+          throw this.syntaxError("Expected ':' after object key");
+        }
         value = "null";
       } else if (!hasColon && !this.canStartValueAt(this.position) && !this.startsEscapedString()) {
         throw this.syntaxError("Expected ':' after object key");
@@ -344,7 +371,7 @@ class JsonRepairParser {
     if (openingQuote === undefined || !isQuote(openingQuote)) {
       throw this.syntaxError("Expected a string");
     }
-    const quoteFamily = DOUBLE_QUOTES.has(openingQuote) ? DOUBLE_QUOTES : SINGLE_QUOTES;
+    const quoteFamily = closingQuotesFor(openingQuote);
     this.position += escapedBoundary ? 2 : openedByEntity ? openingEntity.length : 1;
 
     let value = "";
@@ -427,7 +454,7 @@ class JsonRepairParser {
     // until the next request passes it; otherwise many strings can search the
     // same suffix. Quote family and boundary encoding have independent scans.
     const mode =
-      (quoteFamily === DOUBLE_QUOTES ? 0 : 3) + (escapedBoundary ? 1 : openedByEntity ? 2 : 0);
+      QUOTE_FAMILY_INDEX.get(quoteFamily)! * 3 + (escapedBoundary ? 1 : openedByEntity ? 2 : 0);
     this.closingQuoteSearches ??= [];
     const searches = this.closingQuoteSearches;
     const cached = searches[mode];
@@ -677,7 +704,8 @@ class JsonRepairParser {
         this.position++;
         continue;
       }
-      if (char === "/" && this.peek(1) === "/") {
+      // `key://...` is a URL glued to its colon (`{see http://x}`), not a comment.
+      if (char === "/" && this.peek(1) === "/" && this.input[this.position - 1] !== ":") {
         this.position += 2;
         while (!this.atEnd() && this.peek() !== "\n" && this.peek() !== "\r") this.position++;
         continue;
@@ -719,11 +747,31 @@ class JsonRepairParser {
       ",:[]{}+);".includes(char) ||
       isQuote(char) ||
       isDigit(char) ||
-      (allowMissingComma && next > afterQuote && this.canStartValueAt(next)) ||
+      (allowMissingComma &&
+        next > afterQuote &&
+        this.canStartValueAt(next) &&
+        !this.bareWordRunsIntoQuote(next)) ||
       this.isKeywordAt(next) ||
       this.looksLikeObjectKeyAt(next);
     boundaryCache?.set(next, result);
     return result;
+  }
+
+  /**
+   * Whether a bare word at `start` runs into a quote before any delimiter.
+   * `['x' abc]` is a missing comma before the unquoted value `abc`, but in
+   * `"said "hi" ok"` the word `ok` ends at a quote, so the quote before it was
+   * unescaped string content. The scan stops at the first quote, so successive
+   * calls cover disjoint ranges.
+   */
+  private bareWordRunsIntoQuote(start: number): boolean {
+    if (!isIdentifierStart(this.input[start])) return false;
+    for (let index = start + 1; index < this.input.length; index++) {
+      const char = this.input[index];
+      if (char === undefined || ",:[]{}\n\r".includes(char)) return false;
+      if (isQuote(char)) return true;
+    }
+    return false;
   }
 
   private isKeywordAt(index: number): boolean {
@@ -853,6 +901,10 @@ class JsonRepairParser {
   private syntaxError(message: string): SyntaxError {
     return new SyntaxError(`${message} at position ${this.position}`);
   }
+}
+
+function isContainer(repaired: string): boolean {
+  return repaired[0] === "{" || repaired[0] === "[";
 }
 
 function isQuote(char: string | undefined): boolean {

@@ -92,7 +92,8 @@ And there's a quality angle: forcing a model into JSON-only output often **hurts
 - 🪜 **Layered fallbacks** — tag → ` ```json ` fence → bare fence → balanced `{…}` / `[…]` in raw text
 - 🔁 **Parse-aware fallthrough** — if the best candidate fails to parse (or fails your schema), the next one is tried automatically
 - 🎯 **Example-echo safe** — `pickLast` grabs the *final* `<result>` block, not the example the model copied from your prompt
-- 🩹 **Repairs almost-JSON** — trailing commas, single quotes, comments, unquoted keys, and truncated containers via built-in repair
+- 🩹 **Repairs almost-JSON** — trailing commas, single quotes, comments, unquoted keys, and unclosed containers via built-in repair
+- ✂️ **Truncation-aware** — output cut off by a token limit fails loudly with `truncated: true` instead of yielding partial data (opt in to repairing it with `allowTruncated`)
 - ✅ **Bring your own validator** — pass a zod schema directly, or any `(unknown) => T` function (valibot, arktype, hand-rolled)
 - 🖥️ **`npx llm-json-extract` CLI included** — pipe `claude -p` / `codex exec` output straight through, zero glue code
 - 🪶 **Tiny & dependable** — zero runtime dependencies, ESM + CJS, full TypeScript types, tree-shakeable
@@ -156,6 +157,10 @@ Real model output is messy in predictable ways. All of these extract cleanly wit
 | Ignored the fence too and dumped bare JSON mid-paragraph | Balanced `{…}` / `[…]` scanner catches it |
 | Emitted trailing commas, comments, single quotes, unquoted keys | Built-in repair fixes it before `JSON.parse` |
 | Put triple backticks *inside* a JSON string value | Fence parsing is CommonMark-aware; the fence doesn't end early |
+| Added "Hope this helps!" on its own line *inside* the tag or fence | The leading object/array is used; the prose is not merged into it |
+| Cited sources as `[1]` or wrote `[Thinking]` before bare JSON | Bracketed prose is tried only after real-looking data |
+| Got cut off by a token limit mid-answer (no closing tag, open brackets) | Throws with `truncated: true` so you can retry with a larger limit — or pass `allowTruncated: true` to repair and use the partial JSON |
+| Stopped at a `</result>` stop sequence, so the closing tag is missing | The complete JSON before it is used |
 | Produced a first candidate that parses but fails your schema | `extractJsonWith` moves on to the next candidate |
 | Returned nothing JSON-shaped at all | Throws `LlmJsonExtractError` with `stage` and the raw text |
 
@@ -228,11 +233,12 @@ llm-json-extract --pretty response.txt
 | `-t, --tag <name>` | Tag to scan for (repeatable; replaces the defaults `result`, `json`, `output`) |
 | `--first` | Prefer the first tag match instead of the last |
 | `--no-fence` / `--no-bare` / `--no-repair` | Disable individual fallback/repair stages |
+| `--allow-truncated` | Repair and print JSON that was cut off mid-answer instead of failing |
 | `-r, --raw` | Print the extracted candidate as-is, without parsing or repairing |
 | `-p, --pretty` | Pretty-print the parsed JSON (2-space indent) |
 | `-h, --help` / `-V, --version` | Help / version |
 
-Exit codes: `0` success, `1` nothing extracted or parsed, `2` usage error — so `||` fallbacks and retry loops in shell scripts just work.
+Exit codes: `0` success, `1` nothing extracted or parsed (or the answer was cut off), `2` usage error — so `||` fallbacks and retry loops in shell scripts just work.
 
 ## Recipes
 
@@ -262,14 +268,22 @@ import { extractJsonWith, LlmJsonExtractError } from "llm-json-extract";
 
 async function askWithRetry<T>(prompt: string, schema: { parse: (x: unknown) => T }) {
   let lastHint = "";
+  let maxTokens = 1024;
   for (let attempt = 0; attempt < 3; attempt++) {
-    const output = await callModel(prompt + lastHint);
+    const output = await callModel(prompt + lastHint, { maxTokens });
     try {
       return extractJsonWith(output, schema);
     } catch (e) {
       if (!(e instanceof LlmJsonExtractError)) throw e;
-      lastHint = `\n\nYour previous reply failed at the "${e.stage}" stage` +
-        `${e.extracted ? ` on: ${e.extracted}` : ""}. ` +
+      if (e.truncated) {
+        // The answer was fine but ran out of room: give it more, same prompt.
+        maxTokens *= 2;
+        continue;
+      }
+      // e.message includes the parser or validator error (e.g. which field
+      // failed your schema), which is the most useful hint for the model.
+      lastHint = `\n\nYour previous reply failed at the "${e.stage}" stage: ${e.message}` +
+        `${e.extracted ? `\nIt contained: ${e.extracted}` : ""}\n` +
         `Reply again with valid JSON inside <result>...</result>.`;
     }
   }
@@ -308,8 +322,11 @@ extractJson(llmOutput, {
   tryCodeFence: true, // fall back to ```json / ``` fenced blocks
   tryBareJson: true,  // fall back to balanced {...} / [...] runs in raw text
   repair: true,       // repair common LLM JSON mistakes before JSON.parse
+  allowTruncated: false, // throw (rather than repair) when the answer was cut off mid-JSON
 });
 ```
+
+> **Truncated output:** when the answer stops mid-JSON (typically a token limit), `extractJson` and `extractJsonWith` throw an `LlmJsonExtractError` with `truncated: true` instead of returning partial data — so a cut-off `"reason": "The essay is"` can't pass your schema, and an example echoed earlier in the output is never returned in its place. Pass `allowTruncated: true` to repair and accept the partial JSON. A missing closing tag alone is fine: with a `</result>` stop sequence, complete JSON before it is used as usual.
 
 > **Note:** tag priority is decided by *document position* (per `pickLast`), not by order in the `tags` array.
 
@@ -324,9 +341,10 @@ try {
   const data = extractJson(llmOutput);
 } catch (e) {
   if (e instanceof LlmJsonExtractError) {
-    e.stage;     // "extract" — nothing JSON-shaped found
+    e.stage;     // "extract" — nothing JSON-shaped found, or the answer was cut off
                  // "parse"   — candidates found, none parsed
                  // "validate"— parsed, but your schema rejected everything
+    e.truncated; // true if the answer was cut off mid-JSON (see allowTruncated)
     e.raw;       // the full original input
     e.extracted; // the substring that was attempted (or null)
     e.cause;     // the underlying JSON.parse / validator error
@@ -340,9 +358,12 @@ try {
 input text
    │
    ├─ 1. tag matches        <result>…</result>, <json>…</json>, <output>…</output>
-   │       preferred match first (pickLast), then the rest in document order
+   │       preferred match first (pickLast), then the rest in document order;
+   │       a tag left unclosed (stop sequence or cut-off) runs to the end
    ├─ 2. code fences        ```json blocks first, then bare ``` blocks
-   └─ 3. bare JSON          balanced {…} / […] runs, string- and escape-aware
+   └─ 3. bare JSON          balanced {…} / […] runs, string- and escape-aware,
+           plus a container still open at the end of the text;
+           bracketed prose like [1] or [Thinking] is tried last
    │
    ▼
 candidate list ──► for each: built-in repair → JSON.parse → (your validator)
@@ -352,6 +373,8 @@ candidate list ──► for each: built-in repair → JSON.parse → (your vali
 Details worth knowing:
 
 - Tag matching is case-insensitive and tolerates attributes (`<result lang="json">`).
+- If a tag or fence body is a complete object/array followed by a line of prose (`{…}\nHope this helps!`), that object/array is also offered as a candidate on its own. Newline-delimited JSON is only joined into an array when every line is an object or array, so a trailing prose line is never wrapped into the result.
+- `//` and `/* */` glued to a word or colon (`http://…`, `src/*`) are treated as text rather than comments.
 - The bare-JSON scanner respects strings delimited by double, single, or smart quotes, escapes, and `//` / `/* */` comments, so braces and comment markers inside quoted values stay inside the candidate.
 - When an unmatched quote requires recovery, containers that parse without completing unmatched quotes or brackets are preserved as whole candidates. Recovery may select an enclosing parent, but cannot replace a complete container with an internal fragment. Raw candidates remain unchanged, including with `repair: false`.
 - Fence parsing follows CommonMark closing rules — a ```` ``` ```` inside a JSON string won't terminate the block.

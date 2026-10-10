@@ -5,6 +5,59 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-10-10
+
+### Fixed
+
+- A tag or fence body followed by a prose line (`{…}\nHope this helps!`) no
+  longer comes back wrapped in an array with the prose. Newline-delimited JSON
+  is still joined, but only when every line is an object or array, and a
+  body's leading object/array is now also offered as a candidate on its own.
+- Bracketed prose such as `[1]` citations, `[Thinking]`, Markdown link text,
+  or `[ ]` checkboxes no longer wins over real data in bare-JSON fallback;
+  such arrays are now tried last. Arrays with quoted items (including
+  Python-style `['a', 'b']`), numbers, literals, or nested containers still
+  count as data.
+- Output cut off mid-answer (for example by a token limit) is now detected
+  instead of being silently replaced: previously an unclosed answer tag was
+  ignored, so an example echoed earlier in the output, or a complete fragment
+  of the cut-off answer, could be returned as if it were the answer. A stray
+  `[` or `{` in earlier prose is not mistaken for cut-off data, and complete
+  JSON whose closing tag was consumed by a stop sequence is used as before.
+- A key cut off at the end of the input (`{"a": 1, "b`) now repairs to
+  `"b": null`, as in jsonrepair, including when its closing quote is missing.
+- Restore jsonrepair 3.15 quote behavior: a string opened with an ASCII `'` or
+  `"` only closes with the same quote, so backticks and smart quotes inside it
+  are content (``{'cmd': 'run `ls`'}``). A quote followed by a word that runs
+  into another quote is treated as unescaped content
+  (`"he said "hi" ok"`) rather than the end of the string.
+- `//` glued to a word or colon (`http://`) no longer starts a comment in the
+  bare-JSON scanner, which could hide every later bracket on that line.
+- Scanning many unclosed tag bodies is now linear instead of quadratic.
+- CLI help no longer refers to `jsonrepair`.
+- TypeScript users who `require()` the package under `node16`/`nodenext`
+  module resolution now get CommonJS declarations (`dist/index.d.cts`)
+  instead of ESM ones ("masquerading as ESM"). Internal declaration files are
+  no longer shipped.
+- The CLI no longer prints an `EPIPE` stack trace when its output is piped
+  into a reader that exits early, such as `head`.
+
+### Added
+
+- `allowTruncated` option (default `false`) and CLI `--allow-truncated` flag.
+  By default, `extractJson` and `extractJsonWith` throw an
+  `LlmJsonExtractError` with the new `truncated: true` property when the
+  answer was cut off mid-JSON, so callers can retry with a larger output
+  limit. With `allowTruncated: true`, the cut-off JSON is repaired (open
+  strings and containers closed) and returned. `extractJsonCandidates` and
+  `extractJsonString` list cut-off candidates either way.
+- Property-based tests (fast-check): valid JSON surrounded by prose, tags, or
+  fences round-trips unchanged; truncated output keeps its top-level shape;
+  and arbitrary input only ever throws `LlmJsonExtractError`.
+- `npm run check:package` (are-the-types-wrong) in CI and before publishing.
+  The release workflow also verifies that the pushed tag matches the
+  `package.json` version and runs the packed-tarball smoke test.
+
 ## [2.0.0] - 2026-08-02
 
 ### Changed
@@ -187,7 +240,9 @@ First stable release. The public API (`extractJson`, `extractJsonString`,
 
 Initial release.
 
-[1.1.1]: https://github.com/ifapmzadu6/llm-json-extract/compare/v1.0.0...v1.1.1
+[2.1.0]: https://github.com/ifapmzadu6/llm-json-extract/compare/v2.0.0...v2.1.0
+[2.0.0]: https://github.com/ifapmzadu6/llm-json-extract/releases/tag/v2.0.0
+[1.1.1]: https://github.com/ifapmzadu6/llm-json-extract/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/ifapmzadu6/llm-json-extract/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/ifapmzadu6/llm-json-extract/compare/v0.6.1...v1.0.0
 [0.6.1]: https://github.com/ifapmzadu6/llm-json-extract/compare/v0.6.0...v0.6.1

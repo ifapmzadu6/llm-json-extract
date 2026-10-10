@@ -29,6 +29,7 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - run: npm run check:package
       - run: npm run test:smoke
 
   minimum-node-runtime:

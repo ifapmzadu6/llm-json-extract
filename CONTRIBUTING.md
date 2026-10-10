@@ -13,16 +13,18 @@ npm run lint       # biome check
 npm run fix        # biome auto-fix
 npm run typecheck  # tsc --noEmit
 npm run build      # esbuild + tsc → dist/
+npm run check:package  # are-the-types-wrong on the packed tarball (after build)
+npm run test:smoke     # install the packed tarball and run ESM, CJS, and CLI checks
 ```
 
-`npm test` runs the full suite; `npm run test:watch` for TDD.
+`npm test` runs the full suite, including fast-check property tests; `npm run test:watch` for TDD.
 
 ## Pull Requests
 
 - Add or update tests for any behavior change.
 - Keep the public API surface small. Prefer composition over options; if you find yourself adding a fifth boolean to `ExtractOptions`, reconsider.
 - Run `npm run fix` before opening a PR to apply the project's lint/format rules.
-- CI runs on Node 20 / 22 / 24. Code that depends on Node-only APIs should be avoided — the library targets browsers and edge runtimes too.
+- CI runs on Node 20 / 22 / 24 / 26. Code that depends on Node-only APIs should be avoided — the library targets browsers and edge runtimes too.
 
 ## Issues
 
@@ -36,4 +38,4 @@ Minimal reproductions are gold.
 
 ## Releases
 
-Maintainers tag `vX.Y.Z` from `main`; the GitHub Actions release workflow handles the npm publish with provenance.
+Maintainers bump `version` in `package.json`, then tag `vX.Y.Z` from `main`; the GitHub Actions release workflow checks that the tag matches `package.json`, runs the full checks, and publishes to npm with provenance.

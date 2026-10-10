@@ -11,6 +11,7 @@ function args(overrides: Partial<CliArgs> = {}): CliArgs {
     fence: true,
     bare: true,
     repair: true,
+    allowTruncated: false,
     tags: [],
     file: null,
     ...overrides,
@@ -121,5 +122,18 @@ describe("extractForCli", () => {
     const text = "<result>{'single': 'quotes',}</result>";
     expect(extractForCli(text, args()).exitCode).toBe(0);
     expect(extractForCli(text, args({ repair: false })).exitCode).toBe(1);
+  });
+
+  it("fails on output cut off mid-answer unless --allow-truncated is given", () => {
+    const text = '<result>{"items": ["a", "b';
+    const failure = extractForCli(text, args());
+    expect(failure.exitCode).toBe(1);
+    expect(failure.stderr).toMatch(/cut off.*--allow-truncated/);
+    expect(extractForCli(text, args({ allowTruncated: true }))).toEqual({
+      exitCode: 0,
+      stdout: '{"items":["a","b"]}',
+      stderr: null,
+    });
+    expect(parseCliArgs(["--allow-truncated"]).allowTruncated).toBe(true);
   });
 });
